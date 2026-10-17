@@ -11,6 +11,7 @@ import {
   lineFatigue,
   nameKey,
   distanceM,
+  walkMinutes,
   COMPLEX_RADIUS_M,
   type Network,
   type RideOption,
@@ -154,6 +155,8 @@ interface TripView {
   faceWeights: number[];
   /** The stops result; picked automatically when only one face is open. */
   face: Face | null;
+  /** Stations off-limits as destinations (explored areas). */
+  explored: Set<number>;
   streak: Streak;
 }
 
@@ -168,15 +171,18 @@ function tripView(trip: Trip): TripView {
     ? explorer.visitedArea([current], settings.maxWalkMin)
     : explorer.visitedArea([...new Set([...visited, ...past])], settings.maxWalkMin);
 
-  const count = sameLineStreak(trip.steps.map((s) => s.line));
+  // Walking to another station ends a same-line streak.
+  const lastLine = trip.steps.at(-1)?.line;
+  const count = lastLine ? sameLineStreak(trip.steps.map((s) => s.line ?? "")) : 0;
   const streak: Streak = {
     count,
-    line: count ? lineIndex.get(trip.steps.at(-1)!.line)! : -1,
+    line: lastLine ? lineIndex.get(lastLine)! : -1,
     weight: settings.lineChangeBoost ? lineChangeWeight(count) : 1,
   };
-  // Stations got off at on this trip, per line (the start doesn't count: you didn't ride there).
+  // Stations got off at on this trip, per line (the start and walks don't count: you didn't ride there).
   const visitedPerLine = new Map<number, number>();
   for (const step of trip.steps) {
+    if (!step.line) continue;
     const line = stations[stationIndex.get(step.path.at(-1)!)!]!.line;
     visitedPerLine.set(line, (visitedPerLine.get(line) ?? 0) + 1);
   }
@@ -205,7 +211,7 @@ function tripView(trip: Trip): TripView {
     : rolled.open.length === 1
       ? rolled.open[0]!
       : (rolled.open.find((f) => f.stops === trip.rolledStops) ?? null);
-  return { visited, current, choices, open, rolled, faceWeights, face, streak };
+  return { visited, current, choices, open, rolled, faceWeights, face, streak, explored };
 }
 
 function startTrip(station: number): void {
@@ -367,16 +373,71 @@ function renderTrip(trip: Trip): void {
     </section>
     ${exploreHtml(view, stopNumber === 0)}
     <div id="map-slot"></div>
+    ${walkHtml(trip)}
     ${lineRollHtml(trip, view)}
     ${view.rolled ? stopsRollHtml(view, view.rolled, view.face) : ""}
     ${view.rolled && view.face ? goHtml(view.rolled, view.face) : ""}
     ${journeyHtml(trip)}`;
 
   app.querySelector("#map-slot")!.replaceWith(mapSection);
+  const walkSearch = app.querySelector<HTMLInputElement>("#walk-search");
+  if (walkSearch) {
+    walkSearch.addEventListener("input", () => renderWalkResults(view, walkSearch.value));
+    renderWalkResults(view, "");
+  }
   mapSection.hidden = false;
   mapSection.open = mapOpen;
   loadSpots(view.current);
   updateMap(trip, view);
+}
+
+/** "Walked to another station": continue from a different station before rolling. */
+function walkHtml(trip: Trip): string {
+  // Once a roll is made and re-rolls are off, walking away would be a way to dodge it.
+  const rollMade = trip.rolledOption !== null || trip.rolledStops !== null;
+  if (rollMade && !state.settings.allowRerolls) return "";
+  return `
+    <details class="card collapsible walk" data-section="walk"${openAttr("walk", false)}>
+      <summary><h3>${t.walkTitle}</h3></summary>
+      <p class="muted small">${t.walkHint}</p>
+      <input id="walk-search" class="search" type="search" placeholder="${esc(t.searchPlaceholder)}" autocomplete="off">
+      <ul id="walk-results" class="results"></ul>
+    </details>`;
+}
+
+/** Nearest stations first; with a query, matching stations (nearest first among equal matches). */
+function renderWalkResults(view: TripView, query: string): void {
+  const results = app.querySelector<HTMLElement>("#walk-results");
+  if (!results) return;
+  const here = stations[view.current]!;
+  const key = nameKey(query);
+  const raw = query.trim();
+  const hereGroup = (g: number[]) => g.some((i) => explorer.keys[i] === explorer.keys[view.current]) && distanceM(stations[g[0]!]!, here) <= COMPLEX_RADIUS_M;
+  const matches = complexes()
+    .filter((g) => !hereGroup(g))
+    .map((group) => {
+      const k = explorer.keys[group[0]!]!;
+      const rank = !key && !raw ? 0 : key && k.startsWith(key) ? 0 : key && k.includes(key) ? 1 : stations[group[0]!]!.nameJa.includes(raw) ? 2 : -1;
+      return { group, rank, distance: distanceM(here, stations[group[0]!]!) };
+    })
+    .filter((m) => m.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || a.distance - b.distance)
+    .slice(0, key || raw ? 10 : 8);
+  results.innerHTML = matches.length
+    ? matches
+        .map(({ group, distance }) => {
+          const lineDots = [...new Set(group.map((i) => stations[i]!.line))]
+            .map((l) => `<span class="dot" style="--line:${esc(lines[l]!.color)}"></span>`)
+            .join("");
+          const explored = group.some((i) => view.explored.has(i)) ? ` <span class="tag">${t.exploredTag}</span>` : "";
+          const minutes = Math.max(1, Math.round(walkMinutes(here, stations[group[0]!]!)));
+          return `<li><button data-action="walk" data-station="${group[0]}">
+            <span><strong>${esc(stationName(group[0]!))}</strong> <span class="ja">${esc(stationAltName(group[0]!))}</span>${explored}
+              <br><small class="muted">${t.walkMin(minutes)} · ${(distance / 1000).toFixed(1)} km</small></span>
+            <span class="dots">${lineDots}</span></button></li>`;
+        })
+        .join("")
+    : `<li class="muted">${t.noStationFound}</li>`;
 }
 
 function exploreHtml(view: TripView, atStart: boolean): string {
@@ -556,9 +617,11 @@ function journeyHtml(trip: Trip): string {
   const steps = trip.steps
     .map((step, i) => {
       const dest = stationIndex.get(step.path.at(-1)!)!;
-      return `<li><span class="stop-marker inline"><span>${stopLabel(i + 1)}</span></span>
-        ${lineBadge(lineIndex.get(step.line)!)} ${t.stops(step.stops)} → <strong>${esc(stationName(dest))}</strong>
-        <small class="muted">${timeFormat.format(new Date(step.at))}</small></li>`;
+      const label = `<span class="stop-marker inline"><span>${stopLabel(i + 1)}</span></span>`;
+      const time = `<small class="muted">${timeFormat.format(new Date(step.at))}</small>`;
+      if (!step.line) return `<li>${label} ${t.walkedTo(esc(stationName(dest)))} ${time}</li>`;
+      return `<li>${label}
+        ${lineBadge(lineIndex.get(step.line)!)} ${t.stops(step.stops)} → <strong>${esc(stationName(dest))}</strong> ${time}</li>`;
     })
     .join("");
   return `
@@ -671,11 +734,19 @@ function updateMap(trip: Trip, view: TripView): void {
   const points: L.LatLngTuple[] = [];
 
   let previous = stationIndex.get(trip.start)!;
+  const walkStyle: L.PolylineOptions = { color: "#666", dashArray: "2 6", weight: 3 };
   for (const step of trip.steps) {
     const board = stationIndex.get(step.board)!;
     const path = step.path.map((id) => stationIndex.get(id)!);
+    if (!step.line) {
+      // Walked to another station: a dotted line, like the short walk to a nearby platform.
+      L.polyline([latlng(previous), latlng(path[0]!)], walkStyle).addTo(mapLayer!);
+      points.push(latlng(path[0]!));
+      previous = path[0]!;
+      continue;
+    }
     const color = lines[lineIndex.get(step.line)!]!.color;
-    if (board !== previous) L.polyline([latlng(previous), latlng(board)], { color: "#666", dashArray: "2 6", weight: 3 }).addTo(mapLayer!);
+    if (board !== previous) L.polyline([latlng(previous), latlng(board)], walkStyle).addTo(mapLayer!);
     const coords = [board, ...path].map(latlng);
     L.polyline(coords, { color, weight: 6, opacity: 0.9 }).addTo(mapLayer!);
     points.push(...coords);
@@ -815,6 +886,18 @@ async function handleAction(action: string, target: HTMLElement): Promise<void> 
         at,
       });
       recordVisit(state.history, path.at(-1)!, at);
+      trip.rolledOption = null;
+      trip.rolledStops = null;
+      trip.allowRevisit = false;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      break;
+    }
+    case "walk": {
+      const from = tripView(trip).current;
+      const dest = stations[Number(target.dataset.station)]!.id;
+      const at = new Date().toISOString();
+      trip.steps.push({ line: null, board: stations[from]!.id, stops: 0, path: [dest], at });
+      recordVisit(state.history, dest, at);
       trip.rolledOption = null;
       trip.rolledStops = null;
       trip.allowRevisit = false;

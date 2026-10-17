@@ -18,11 +18,12 @@ export interface Settings extends RuleSettings {
 }
 
 export interface Step {
-  /** Line id and travel details, for the log and the map. */
-  line: string;
+  /** Line id ridden; null for a walk to another station (then `stops` is 0). */
+  line: string | null;
+  /** Station boarded at (a ride) or walked from (a walk). */
   board: string;
   stops: number;
-  /** Station ids passed, ending at the destination. */
+  /** Station ids passed, ending at the destination (just the destination for a walk). */
   path: string[];
   at: string;
 }
