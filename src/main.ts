@@ -157,6 +157,10 @@ interface TripView {
   face: Face | null;
   /** Stations off-limits as destinations (explored areas). */
   explored: Set<number>;
+  /** Hubs from earlier trips that "only new stations" lets you land on again. */
+  hubRevisits: Set<number>;
+  /** Explored on this trip (a subset of `explored`; the rest comes from earlier trips). */
+  tripExplored: Set<number>;
   streak: Streak;
 }
 
@@ -165,11 +169,21 @@ function tripView(trip: Trip): TripView {
   const visited = [trip.start, ...trip.steps.map((s) => s.path.at(-1)!)].map((id) => stationIndex.get(id)!);
   const current = visited.at(-1)!;
   // With the escape hatch on, only the current station area stays off-limits.
-  // "Only new stations" trips also rule out everywhere from earlier trips.
-  const past = trip.onlyNew ? Object.keys(state.history).map((id) => stationIndex.get(id)!) : [];
+  // "Only new stations" trips also rule out everywhere from earlier trips, except big hubs:
+  // blocking those would leave few places to change lines.
   const explored = trip.allowRevisit
     ? explorer.visitedArea([current], settings.maxWalkMin)
-    : explorer.visitedArea([...new Set([...visited, ...past])], settings.maxWalkMin);
+    : explorer.visitedArea(visited, settings.maxWalkMin);
+  const tripExplored = new Set(explored);
+  const hubRevisits = new Set<number>();
+  if (trip.onlyNew && !trip.allowRevisit) {
+    const past = Object.keys(state.history).map((id) => stationIndex.get(id)!);
+    for (const s of explorer.visitedArea(past, settings.maxWalkMin)) {
+      if (explored.has(s)) continue;
+      if (explorer.isHub(s, settings.maxWalkMin)) hubRevisits.add(s);
+      else explored.add(s);
+    }
+  }
 
   // Walking to another station ends a same-line streak.
   const lastLine = trip.steps.at(-1)?.line;
@@ -211,7 +225,7 @@ function tripView(trip: Trip): TripView {
     : rolled.open.length === 1
       ? rolled.open[0]!
       : (rolled.open.find((f) => f.stops === trip.rolledStops) ?? null);
-  return { visited, current, choices, open, rolled, faceWeights, face, streak, explored };
+  return { visited, current, choices, open, rolled, faceWeights, face, streak, explored, hubRevisits, tripExplored };
 }
 
 function startTrip(station: number): void {
@@ -405,11 +419,25 @@ function walkHtml(trip: Trip): string {
     </details>`;
 }
 
+let historyAreaCache: { key: string; area: Set<number> } | null = null;
+
+/** Every station area in the visit history (all trips), for "earlier trip" tags. */
+function historyArea(): Set<number> {
+  const ids = Object.keys(state.history);
+  const key = `${state.settings.maxWalkMin}:${ids.sort().join(",")}`;
+  if (historyAreaCache?.key !== key) {
+    const area = explorer.visitedArea(ids.map((id) => stationIndex.get(id)!), state.settings.maxWalkMin);
+    historyAreaCache = { key, area };
+  }
+  return historyAreaCache.area;
+}
+
 /** Nearest stations first; with a query, matching stations (nearest first among equal matches). */
 function renderWalkResults(view: TripView, query: string): void {
   const results = app.querySelector<HTMLElement>("#walk-results");
   if (!results) return;
   const here = stations[view.current]!;
+  const pastArea = historyArea();
   const key = nameKey(query);
   const raw = query.trim();
   const hereGroup = (g: number[]) => g.some((i) => explorer.keys[i] === explorer.keys[view.current]) && distanceM(stations[g[0]!]!, here) <= COMPLEX_RADIUS_M;
@@ -429,10 +457,14 @@ function renderWalkResults(view: TripView, query: string): void {
           const lineDots = [...new Set(group.map((i) => stations[i]!.line))]
             .map((l) => `<span class="dot" style="--line:${esc(lines[l]!.color)}"></span>`)
             .join("");
-          const explored = group.some((i) => view.explored.has(i)) ? ` <span class="tag">${t.exploredTag}</span>` : "";
+          const tag = group.some((i) => view.tripExplored.has(i))
+            ? ` <span class="tag">${t.exploredTag}</span>`
+            : group.some((i) => pastArea.has(i))
+              ? ` <span class="tag past">${t.exploredPastTag}</span>`
+              : "";
           const minutes = Math.max(1, Math.round(walkMinutes(here, stations[group[0]!]!)));
           return `<li><button data-action="walk" data-station="${group[0]}">
-            <span><strong>${esc(stationName(group[0]!))}</strong> <span class="ja">${esc(stationAltName(group[0]!))}</span>${explored}
+            <span><strong>${esc(stationName(group[0]!))}</strong> <span class="ja">${esc(stationAltName(group[0]!))}</span>${tag}
               <br><small class="muted">${t.walkMin(minutes)} · ${(distance / 1000).toFixed(1)} km</small></span>
             <span class="dots">${lineDots}</span></button></li>`;
         })
@@ -539,11 +571,12 @@ function lineRollHtml(trip: Trip, view: TripView): string {
 }
 
 /** The stops result: the count, big, and where it takes you. */
-function stopCard(face: Face, extraClass = ""): string {
+function stopCard(face: Face, hubRevisits: Set<number>, extraClass = ""): string {
   const dest = face.path.at(-1)!;
+  const hub = hubRevisits.has(dest) ? ` <span class="tag" title="${esc(t.hubTitle)}">${t.hubTag}</span>` : "";
   return `<div class="option stop-card ${extraClass}">
     <span class="num">${face.stops}</span>
-    <span class="body"><strong>${esc(stationName(dest))}</strong> <span class="ja">${esc(stationAltName(dest))}</span><br>
+    <span class="body"><strong>${esc(stationName(dest))}</strong> <span class="ja">${esc(stationAltName(dest))}</span>${hub}<br>
       <small class="muted">${t.stops(face.stops)}</small></span>
   </div>`;
 }
@@ -553,9 +586,12 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
   const faces = choice.faces
     .map((f) => {
       const weight = weightByStops.get(f.stops) ?? 1;
-      const cls = [f.blocked ? `blocked ${f.blocked}` : "open", face?.stops === f.stops ? "chosen" : "", weight > 1 ? "boosted" : ""];
+      const past = f.blocked === "visited" && !view.tripExplored.has(f.path.at(-1)!);
+      const cls = [f.blocked ? `blocked ${f.blocked}` : "open", past ? "past" : "", face?.stops === f.stops ? "chosen" : "", weight > 1 ? "boosted" : ""];
       const dest = f.path.length ? stationName(f.path.at(-1)!) : "";
-      const title = f.blocked ? `${dest ? `${dest}: ` : ""}${t.blocked[f.blocked]}` : dest;
+      const hub = !f.blocked && view.hubRevisits.has(f.path.at(-1)!) ? ` (${t.hubTag})` : "";
+      const reason = past ? t.blockedPast : f.blocked ? t.blocked[f.blocked] : "";
+      const title = f.blocked ? `${dest ? `${dest}: ` : ""}${reason}` : dest + hub;
       const boost = weight > 1 ? ` data-boost="×${shownWeight(weight)}"` : "";
       return `<div class="face ${cls.join(" ")}" title="${esc(title)}"${boost}>${f.stops}</div>`;
     })
@@ -563,8 +599,9 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
   const single = choice.open.length === 1;
   const boosted = !single && view.faceWeights.some((w) => w > 1);
   const hasShort = choice.faces.some((f) => f.blocked === "short");
+  const hasPast = choice.faces.some((f) => f.blocked === "visited" && !view.tripExplored.has(f.path.at(-1)!));
   const slot = face
-    ? stopCard(face, "chosen")
+    ? stopCard(face, view.hubRevisits, "chosen")
     : `<div class="option placeholder"><span class="num">?</span><span class="body">${t.stopsPrompt(choice.open.length)}</span></div>`;
   return `
     <section class="card" id="step-stops">
@@ -576,6 +613,7 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
       <p class="muted small legend">
         ${single ? t.onlyOneFace : `<span class="face mini blocked visited">✕</span> ${t.legendBlocked}`}
         ${hasShort && !single ? `<span class="face mini blocked short">·</span> ${t.legendShort}` : ""}
+        ${hasPast && !single ? `<span class="face mini blocked visited past">✕</span> ${t.legendPast}` : ""}
         ${boosted ? `<span class="face mini boosted-mini">×</span> ${t.legendBoost(shownWeight(view.streak.weight))}` : ""}
       </p>
       ${single || (face && !state.settings.allowRerolls)
@@ -859,12 +897,12 @@ async function handleAction(action: string, target: HTMLElement): Promise<void> 
       break;
     }
     case "roll-stops": {
-      const { rolled, face, faceWeights } = tripView(trip);
+      const { rolled, face, faceWeights, hubRevisits } = tripView(trip);
       if (!rolled || (face && !state.settings.allowRerolls)) return;
       const pick = weightedRandom(faceWeights);
       const slot = app.querySelector<HTMLElement>("#stops-slot")!;
       const faces = [...app.querySelectorAll<HTMLElement>(".face.open")];
-      const cards = rolled.open.map((f) => stopCard(f, "spinning"));
+      const cards = rolled.open.map((f) => stopCard(f, hubRevisits, "spinning"));
       await spin(cards.length, pick, (i) => {
         slot.innerHTML = cards[i]!;
         faces.forEach((el, j) => el.classList.toggle("spinning", i === j));

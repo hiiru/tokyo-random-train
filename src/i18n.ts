@@ -15,7 +15,7 @@ const en = {
     "Get off, explore, repeat. Stations you've visited are off-limits for the rest of the trip.",
   ],
   startStation: "Start station",
-  searchPlaceholder: "e.g. Asakusabashi or 浅草橋",
+  searchPlaceholder: "e.g. Shinjuku or 新宿",
   nearest: "📍 Nearest to me",
   surprise: "🎲 Surprise me",
   noStationFound: "No station found in the play area.",
@@ -71,7 +71,8 @@ const en = {
 
   howFar: "How far?",
   stopsPrompt: (n: number) => `Roll to pick one of ${n} destinations`,
-  legendBlocked: "explored, out of area, or past the end of the line",
+  legendBlocked: "explored this trip, out of area, or past the end of the line",
+  legendPast: "explored on an earlier trip",
   legendShort: "below your minimum ride",
   legendBoost: (factor: string) => `${factor}× as likely: you can change lines there`,
   boostTrains: (n: number, line: string, factor: string) =>
@@ -85,6 +86,9 @@ const en = {
   walkHint: "Exploring took you closer to another station? Continue your trip from there. It counts as a visit; streaks end.",
   walkedTo: (name: string) => `🚶 Walked to <strong>${name}</strong>`,
   exploredTag: "explored",
+  exploredPastTag: "earlier trip",
+  hubTag: "🔁 hub",
+  hubTitle: "Visited on an earlier trip, but big hubs (5+ lines) stay open in “only new stations” trips so you can change lines.",
   onlyOneFace: "Only one stop count is possible, so no roll needed.",
   onlyOneTrain: "Only one train is possible from here, so no roll needed.",
   rollStops: "🎲 Roll the stops",
@@ -92,9 +96,10 @@ const en = {
   blocked: {
     end: "past the end of the line",
     area: "outside the play area",
-    visited: "already explored",
+    visited: "explored on this trip",
     short: "shorter than your minimum ride",
   },
+  blockedPast: "explored on an earlier trip",
 
   go: "Go!",
   goSentence: (p: { walkMin: number | null; board: string; badge: string; direction: string; stops: number }) =>
@@ -159,7 +164,7 @@ const ja: Messages = {
     "降りて、街を探検して、また振る。一度訪れた駅にはこの旅の間は戻れません。",
   ],
   startStation: "出発駅",
-  searchPlaceholder: "例: 浅草橋 / Asakusabashi",
+  searchPlaceholder: "例: 新宿 / Shinjuku",
   nearest: "📍 現在地から",
   surprise: "🎲 おまかせ",
   noStationFound: "プレイエリア内に該当する駅がありません。",
@@ -214,7 +219,8 @@ const ja: Messages = {
 
   howFar: "何駅？",
   stopsPrompt: (n: number) => `${n}駅からサイコロで決定`,
-  legendBlocked: "探検済み・エリア外・終点の先",
+  legendBlocked: "この旅で探検済み・エリア外・終点の先",
+  legendPast: "以前の旅で探検済み",
   legendShort: "最低駅数未満",
   legendBoost: (factor: string) => `${factor}倍出やすい（乗り換え可能）`,
   boostTrains: (n: number, line: string, factor: string) => `🔁 ${line}に${n}回連続：他の路線が${factor}倍出やすくなります。`,
@@ -226,11 +232,15 @@ const ja: Messages = {
   walkHint: "探検で別の駅の近くに来たら、そこから旅を続けられます。訪問として記録され、連続乗車はリセットされます。",
   walkedTo: (name: string) => `🚶 <strong>${name}</strong>まで歩いた`,
   exploredTag: "探検済み",
+  exploredPastTag: "以前の旅",
+  hubTag: "🔁 ハブ駅",
+  hubTitle: "以前の旅で訪問済みですが、乗り換えのため大きなハブ駅（5路線以上）は「未訪問の駅だけ」でも降りられます。",
   onlyOneFace: "行ける駅数が一つだけなので、サイコロは不要です。",
   onlyOneTrain: "ここから乗れる電車は一つだけなので、サイコロは不要です。",
   rollStops: "🎲 駅数を決める",
   rerollStops: "🎲 駅数を振り直す",
-  blocked: { end: "終点の先", area: "プレイエリア外", visited: "探検済み", short: "最低駅数未満" },
+  blocked: { end: "終点の先", area: "プレイエリア外", visited: "この旅で探検済み", short: "最低駅数未満" },
+  blockedPast: "以前の旅で探検済み",
 
   go: "出発！",
   goSentence: (p: { walkMin: number | null; board: string; badge: string; direction: string; stops: number }) =>

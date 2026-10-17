@@ -234,6 +234,22 @@ export class Explorer {
     return this.nearby(station, maxWalkMin).some((n) => this.stations[n.station]!.line !== line);
   }
 
+  /** Lines boardable within `maxWalkMin` that make a station a hub. */
+  static readonly HUB_MIN_LINES = 5;
+  private readonly hubCache = new Map<string, boolean>();
+
+  /** A big interchange: at least HUB_MIN_LINES lines boardable within the walk limit. */
+  isHub(station: number, maxWalkMin: number): boolean {
+    const key = `${maxWalkMin}:${station}`;
+    let hub = this.hubCache.get(key);
+    if (hub === undefined) {
+      const lines = new Set(this.nearby(station, maxWalkMin).map((n) => this.stations[n.station]!.line));
+      hub = lines.size >= Explorer.HUB_MIN_LINES;
+      this.hubCache.set(key, hub);
+    }
+    return hub;
+  }
+
   /**
    * Stations reachable on foot from `from`, including `from` itself. Stations within
    * `maxWalkMin` count, plus same-named members of their station complex (shown with

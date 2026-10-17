@@ -402,3 +402,6 @@ dialog menu button { flex: 1; margin: 0; }
 
 .search { width: 100%; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-soft); background: var(--bg); color: var(--ink); margin: 4px 0 8px; }
 .tag { display: inline-block; padding: 0 6px; border-radius: 999px; background: var(--line-soft); color: var(--muted); font-size: 0.75rem; font-weight: 600; vertical-align: middle; }
+/* Explored on an earlier trip (only-new trips): filled grey instead of dashed outline. */
+.face.blocked.visited.past { border-style: solid; border-color: var(--muted); background: var(--line-soft); opacity: 0.5; }
+.tag.past { background: transparent; border: 1px solid var(--line-soft); }

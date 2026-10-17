@@ -155,6 +155,13 @@ describe("exploration rules", () => {
   });
 });
 
+describe("hubs", () => {
+  test("big interchanges count as hubs, ordinary transfer stations don't", () => {
+    expect(explorer.isHub(station("Shinjuku", "JR-East.Yamanote"), 5)).toBe(true);
+    expect(explorer.isHub(station("Asakusabashi", "JR-East.ChuoSobuLocal"), 5)).toBe(false);
+  });
+});
+
 describe("line fatigue", () => {
   test("each visited station lowers the weight a little, never below half", () => {
     expect([0, 1, 2, 3, 5, 7, 20].map((n) => Number(lineFatigue(n).toFixed(2)))).toEqual([1, 0.87, 0.77, 0.69, 0.57, 0.5, 0.5]);

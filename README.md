@@ -18,7 +18,7 @@ Every station you land on is marked as explored for the rest of the trip, along 
 
 Every station you start from or get off at is recorded with its date, across all trips (undo removes the visit again). The start screen shows **📊 Your stations**: each station with visit count and last visit, newest first, plus a "Clear history" button. Same-named platforms of one station (e.g. JR and Ōedo Asakusabashi) count as one station. During a trip, the station card says "✨ New station" or "Been here 2× before · last …".
 
-Once there is history, the start screen offers **Only new stations**: for that trip, every station area from earlier trips counts as explored, with the same walking-distance rule as in-trip visits. The choice is remembered for the next trip.
+Once there is history, the start screen offers **Only new stations**: for that trip, every station area from earlier trips counts as explored, with the same walking-distance rule as in-trip visits. On the stops die, these faces are filled grey ("explored on an earlier trip"), while stations explored on this trip keep the dashed crossed-out look. The walk list tags them "earlier trip" vs "explored". Exception: big hubs, stations with 5+ lines within the walk limit (about 29 in the default area, e.g. Tokyo, Shinjuku, Shibuya, Ikebukuro), stay open even if visited before, because blocking them would leave few places to change lines. They're tagged "🔁 hub" on the stops die. Hubs visited on the current trip are still blocked. The choice is remembered for the next trip.
 
 The trip and history are saved in `localStorage` (per browser and device), so they survive closing the tab on your phone.
 
