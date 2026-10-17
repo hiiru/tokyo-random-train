@@ -435,3 +435,15 @@ dialog menu button { flex: 1; margin: 0; }
 .dir-icon.reverse { background: var(--line-soft); color: var(--muted); }
 .face.ridden { border-style: dotted; color: var(--muted); }
 .face.mini.ridden { color: var(--muted); }
+/* Link styled as a secondary button (Google Maps route) */
+a.button {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 10px 16px;
+  margin-top: 8px;
+}
+a.button:hover { border-color: var(--muted); }
+.route-hint { display: block; text-align: center; margin-top: 4px; }

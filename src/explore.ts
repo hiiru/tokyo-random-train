@@ -108,6 +108,8 @@ export function mapSearchUrl(query: string, at: LatLng): string {
   return `https://www.google.com/maps/search/${encodeURIComponent(query)}/@${at.lat},${at.lng},16z`;
 }
 
-export function walkingDirectionsUrl(from: LatLng, to: LatLng): string {
-  return `https://www.google.com/maps/dir/?api=1&origin=${from.lat},${from.lng}&destination=${to.lat},${to.lng}&travelmode=walking`;
+/** Google Maps directions; a place is either coordinates or a search string (e.g. "浅草橋駅"). */
+export function directionsUrl(from: LatLng | string, to: LatLng | string, mode: "walking" | "transit"): string {
+  const place = (p: LatLng | string) => (typeof p === "string" ? encodeURIComponent(p) : `${p.lat},${p.lng}`);
+  return `https://www.google.com/maps/dir/?api=1&origin=${place(from)}&destination=${place(to)}&travelmode=${mode}`;
 }

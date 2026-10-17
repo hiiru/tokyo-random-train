@@ -129,6 +129,8 @@ const en = {
   goSentence: (p: { walkMin: number | null; board: string; badge: string; direction: string; stops: number }) =>
     `${p.walkMin === null ? "Take" : `Walk ~${p.walkMin} min to <strong>${p.board}</strong>, then take`} the ${p.badge} ${p.direction} and ride <strong>${plural(p.stops, "stop")}</strong>.`,
   gotOff: (name: string) => `✅ I got off at ${name}`,
+  openRoute: "🗺️ Show route in Google Maps",
+  routeHint: "Google may suggest a faster or different route. Ride the line the dice picked.",
 
   journey: "📒 Journey",
   journeyStart: "Start:",
@@ -296,6 +298,8 @@ const ja: Messages = {
   goSentence: (p: { walkMin: number | null; board: string; badge: string; direction: string; stops: number }) =>
     `${p.walkMin === null ? "" : `<strong>${p.board}</strong>まで徒歩約${p.walkMin}分、`}${p.badge}（${p.direction}）に乗って<strong>${p.stops}駅</strong>先で降りる。`,
   gotOff: (name: string) => `✅ ${name}で降りた`,
+  openRoute: "🗺️ Google マップで経路を表示",
+  routeHint: "Google はより速い別の経路を提案することがあります。サイコロで決まった路線に乗りましょう。",
 
   journey: "📒 旅の記録",
   journeyStart: "出発:",

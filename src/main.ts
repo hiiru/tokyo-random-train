@@ -32,7 +32,7 @@ import {
   type Trip,
   type Settings,
 } from "./state.ts";
-import { nearbySpots, MAP_SEARCHES, mapSearchUrl, walkingDirectionsUrl, type Spot } from "./explore.ts";
+import { nearbySpots, MAP_SEARCHES, mapSearchUrl, directionsUrl, type Spot } from "./explore.ts";
 import { MESSAGES, type Lang, type Messages } from "./i18n.ts";
 
 const explorer = new Explorer(networkData as Network, TRANSFER_CORRECTIONS);
@@ -703,6 +703,7 @@ function stuckHtml(trip: Trip, view: TripView, blockedItems: string): string {
           dest: esc(stationName(tr.path.at(-1)!)),
           onward: [...new Set(tr.onward.map((o) => o.line))].map(lineBadge).join(" "),
         })}</p>
+         ${routeButton(tr.option.board, tr.path.at(-1)!)}
          <button class="primary big" data-action="arrive-transfer">${esc(t.gotOffTransfer(stationName(tr.path.at(-1)!)))}</button>`
       : "";
     body = `
@@ -815,6 +816,23 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
     </section>`;
 }
 
+/**
+ * Google Maps transit route from station to station, by station name ("浅草橋駅"): Google then
+ * routes platform to platform with timetables, instead of walking from map coordinates.
+ */
+function routeButton(from: number, to: number): string {
+  const url = directionsUrl(stationQuery(from), stationQuery(to), "transit");
+  return `<a class="button route" target="_blank" rel="noopener" href="${esc(url)}" title="${esc(t.routeHint)}">${t.openRoute}</a>
+    <small class="muted route-hint">${t.routeHint}</small>`;
+}
+
+/** Japanese station name for searches, without aliases: "明治神宮前〈原宿〉" → "明治神宮前駅". */
+function stationQuery(station: number): string {
+  const s = stations[station]!;
+  if (!s.nameJa) return `${s.name} Station`;
+  return `${s.nameJa.replace(/\s*[〈<(（].*?[〉>)）]\s*/g, "")}駅`;
+}
+
 function goHtml(choice: Choice, face: Face): string {
   const { option } = choice;
   const stops = face.path
@@ -834,6 +852,7 @@ function goHtml(choice: Choice, face: Face): string {
         stops: face.stops,
       })}</p>
       <ol class="stops">${stops}</ol>
+      ${routeButton(option.board, face.path.at(-1)!)}
       <button class="primary big" data-action="arrive">${esc(t.gotOff(stationName(face.path.at(-1)!)))}</button>
     </section>`;
 }
@@ -892,7 +911,7 @@ function suggestionHtml(key: string, station: number, spots: Spot[]): string {
   }
   return `<div class="suggestion"><div class="suggestion-head"><strong>${t.suggestion}</strong>${another}</div>
     ${spotHtml(spot)}
-    <a class="chip" target="_blank" rel="noopener" href="${esc(walkingDirectionsUrl(here, spot.at))}">${t.directions}</a></div>`;
+    <a class="chip" target="_blank" rel="noopener" href="${esc(directionsUrl(here, spot.at, "walking"))}">${t.directions}</a></div>`;
 }
 
 function loadSpots(station: number): void {
