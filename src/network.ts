@@ -81,6 +81,22 @@ export interface Face {
   blocked: BlockReason | null;
 }
 
+/** A ride (any length) to a station where another line still has unexplored stops. */
+export interface TransferRide {
+  option: RideOption;
+  stops: number;
+  /** Stations passed, ending at the transfer station. */
+  path: number[];
+  /** Line + direction options at the transfer station, on other lines, with an open face. */
+  onward: RideOption[];
+}
+
+/** A nearby unexplored station to restart from (by walking or a direct ride). */
+export interface Restart {
+  station: number;
+  distanceM: number;
+}
+
 export const TOKYO_STATION: LatLng = { lat: 35.68124, lng: 139.76712 };
 
 // Casual pace; real walking routes run ~25% longer than the straight line.
@@ -322,6 +338,62 @@ export class Explorer {
       for (const f of faces) if (!f.blocked && f.stops < rules.minStops) f.blocked = "short";
     }
     return faces;
+  }
+
+  /** Open onward options at `station` on lines other than `except` (-1: any line). */
+  private onwardOptions(station: number, except: number, rules: RuleSettings, explored: Set<number>): RideOption[] {
+    return this.options(station, rules.maxWalkMin).filter(
+      (o) => o.line !== except && this.faces(o, rules, explored).some((f) => !f.blocked),
+    );
+  }
+
+  /**
+   * Escape when every roll from here is explored: stations on the lines boardable here, at any
+   * distance (the stops die doesn't apply), where you can change to another line that still has
+   * unexplored stops. One entry per station, via the shortest ride; nearest first.
+   */
+  transfers(from: number, rules: RuleSettings, explored: Set<number>): TransferRide[] {
+    const here = new Set(this.nearby(from, rules.maxWalkMin).map((n) => n.station));
+    const best = new Map<number, TransferRide>();
+    for (const option of this.options(from, rules.maxWalkMin)) {
+      const line = this.lines[option.line]!;
+      // A loop line visits every other station within one lap.
+      const maxStops = line.loop ? line.stations.length - 1 : line.stations.length;
+      for (let stops = 1; stops <= maxStops; stops++) {
+        const path = this.ride(option, stops);
+        if (!path) break;
+        const dest = path[path.length - 1]!;
+        if (here.has(dest) || !this.inArea(dest, rules.areaKm)) continue;
+        if ((best.get(dest)?.stops ?? Infinity) <= stops) continue;
+        const onward = this.onwardOptions(dest, option.line, rules, explored);
+        if (onward.length) best.set(dest, { option, stops, path, onward });
+      }
+    }
+    return [...best.values()].sort((a, b) => a.stops - b.stops);
+  }
+
+  /**
+   * Last resort when no transfer helps: the nearest unexplored stations (one per station
+   * complex) from which at least one roll is open.
+   */
+  restarts(from: number, rules: RuleSettings, explored: Set<number>, limit: number): Restart[] {
+    const origin = this.stations[from]!;
+    const here = new Set(this.nearby(from, rules.maxWalkMin).map((n) => n.station));
+    const candidates = this.stations
+      .map((s, i) => ({ station: i, distanceM: distanceM(origin, s) }))
+      .filter(({ station }) => !here.has(station) && !explored.has(station) && this.inArea(station, rules.areaKm))
+      .sort((a, b) => a.distanceM - b.distanceM);
+    const result: Restart[] = [];
+    for (const candidate of candidates) {
+      if (result.length >= limit) break;
+      const s = this.stations[candidate.station]!;
+      const sameComplex = result.some(
+        (r) => this.keys[r.station] === this.keys[candidate.station] && distanceM(this.stations[r.station]!, s) <= COMPLEX_RADIUS_M,
+      );
+      if (sameComplex) continue;
+      if (this.onwardOptions(candidate.station, -1, rules, explored).length) result.push(candidate);
+    }
+    return result;
   }
 
   /** Station complexes for picking a start: same-named stations within walking range, grouped. */

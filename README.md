@@ -12,7 +12,12 @@ Screen order: current station, Explore (collapsed at the start station), map, th
 
 The **EN / 日本語** toggle in the header switches the whole app: UI text, station and line names, directions, and the Wikipedia language (Japanese Wikipedia has far more local coverage). It defaults to the browser language.
 
-Every station you land on is marked as explored for the rest of the trip, along with every station within the same walking distance. Faces that would land in an explored area, outside the play area, or past the end of the line are crossed out and re-rolled; lines with no open faces drop out of roll 1. If you get boxed in, the app offers a one-time "allow revisits" roll.
+Every station you land on is marked as explored for the rest of the trip, along with every station within the same walking distance. Faces that would land in an explored area, outside the play area, or past the end of the line are crossed out and re-rolled; lines with no open faces drop out of roll 1.
+
+**When every roll is explored** (e.g. you've used up all transfers of a single line):
+1. **🔀 Roll for a transfer:** the app lists stations on the lines here, at any distance (the stops die doesn't apply), where you can change to another line that still has unexplored stops. A die picks one. The transfer station may itself be explored; you're only changing there. One candidate is picked without a roll; re-roll rules apply as usual.
+2. **🧭 No transfer helps:** the 3 nearest unexplored stations with an open roll from there are suggested, each with a "🚶 Walk" button (and a direct ride button if one of the lines here goes there).
+3. "Allow revisits for one roll" stays available as a fallback.
 
 ## Visit history and "only new stations"
 

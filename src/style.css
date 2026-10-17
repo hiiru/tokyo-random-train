@@ -405,3 +405,17 @@ dialog menu button { flex: 1; margin: 0; }
 /* Explored on an earlier trip (only-new trips): filled grey instead of dashed outline. */
 .face.blocked.visited.past { border-style: solid; border-color: var(--muted); background: var(--line-soft); opacity: 0.5; }
 .tag.past { background: transparent; border: 1px solid var(--line-soft); }
+
+/* Stuck: restart suggestions */
+.restarts { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.restart { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line-soft); border-radius: 10px; }
+.restart .row { margin-top: 0; }
+.restart .row button { flex: 0 1 auto; }
+
+/* Dead end: a clearly different card from the normal "Which train?" */
+.card.stuck { border: 2px solid #e8a33d; background: color-mix(in srgb, #e8a33d 10%, var(--card)); }
+.card.stuck .step { background: #e8a33d; color: #1d1b18; }
+.stuck-what { font-size: 1.02rem; font-weight: 600; margin: 4px 0 8px; }
+.stuck-now { line-height: 1.55; margin: 0 0 10px; }
+.transfer-go { line-height: 1.8; margin: 10px 0 4px; }
+.fallback { margin-top: 14px; }

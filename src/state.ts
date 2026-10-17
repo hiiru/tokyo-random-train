@@ -35,6 +35,8 @@ export interface Trip {
   /** Roll results not yet travelled. */
   rolledOption: string | null;
   rolledStops: number | null;
+  /** Transfer roll result ("<option key>@<stops>") when every normal roll is explored. */
+  rolledTransfer?: string | null;
   /** Escape hatch when every option is exhausted; resets after the next arrival. */
   allowRevisit: boolean;
   /** Treat every station area from earlier trips as explored too. */
@@ -98,6 +100,7 @@ export function newTrip(start: string, onlyNew: boolean): Trip {
     steps: [],
     rolledOption: null,
     rolledStops: null,
+    rolledTransfer: null,
     allowRevisit: false,
     onlyNew,
   };

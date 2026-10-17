@@ -155,6 +155,35 @@ describe("exploration rules", () => {
   });
 });
 
+describe("when every roll is explored", () => {
+  const fujimidai = station("Fujimidai", "Seibu.Ikebukuro");
+  const seibu = explorer.lines.find((l) => l.id === "Seibu.Ikebukuro")!;
+  // Ikebukuro → Shakujii-koen and beyond: every stop the d6 reaches from Fujimidai.
+  const explored = explorer.visitedArea(seibu.stations.slice(0, 16), 5);
+  const transferNames = (ex: Set<number>) =>
+    explorer.transfers(fujimidai, rules, ex).map((tr) => explorer.stations[tr.path.at(-1)!]!.name);
+
+  test("transfer rides go to stations where another line still has unexplored stops, nearest first", () => {
+    expect(explorer.options(fujimidai, 5).every((o) => explorer.faces(o, rules, explored).every((f) => f.blocked))).toBe(true);
+    expect(transferNames(explored)).toEqual(["Nerima", "Ikebukuro"]);
+  });
+
+  test("transfer stations whose other lines are explored too are skipped", () => {
+    const withOedo = new Set([...explored, ...explorer.visitedArea(explorer.lines.find((l) => l.id === "Toei.Oedo")!.stations, 5)]);
+    for (const id of ["Seibu.Toshima", "Seibu.SeibuYurakucho"]) {
+      for (const s of explorer.visitedArea(explorer.lines.find((l) => l.id === id)!.stations, 5)) withOedo.add(s);
+    }
+    expect(transferNames(withOedo)).toEqual(["Ikebukuro"]);
+  });
+
+  test("restart suggestions are the nearest unexplored stations with an open roll", () => {
+    const restarts = explorer.restarts(fujimidai, rules, explored, 3);
+    expect(restarts).toHaveLength(3);
+    expect(restarts.every((r) => !explored.has(r.station))).toBe(true);
+    expect(restarts.map((r) => r.distanceM)).toEqual([...restarts.map((r) => r.distanceM)].sort((a, b) => a - b));
+  });
+});
+
 describe("hubs", () => {
   test("big interchanges count as hubs, ordinary transfer stations don't", () => {
     expect(explorer.isHub(station("Shinjuku", "JR-East.Yamanote"), 5)).toBe(true);

@@ -16,6 +16,8 @@ import {
   type Network,
   type RideOption,
   type Face,
+  type TransferRide,
+  type Restart,
 } from "./network.ts";
 import {
   loadState,
@@ -162,6 +164,12 @@ interface TripView {
   /** Explored on this trip (a subset of `explored`; the rest comes from earlier trips). */
   tripExplored: Set<number>;
   streak: Streak;
+  /** When no roll is open: rides to stations where another line still has unexplored stops. */
+  transfers: TransferRide[];
+  /** The rolled transfer (or the only one, picked automatically). */
+  transfer: TransferRide | null;
+  /** When no transfer helps either: the nearest stations to restart from. */
+  restarts: Restart[];
 }
 
 function tripView(trip: Trip): TripView {
@@ -225,7 +233,32 @@ function tripView(trip: Trip): TripView {
     : rolled.open.length === 1
       ? rolled.open[0]!
       : (rolled.open.find((f) => f.stops === trip.rolledStops) ?? null);
-  return { visited, current, choices, open, rolled, faceWeights, face, streak, explored, hubRevisits, tripExplored };
+  const transfers = open.length === 0 ? explorer.transfers(current, settings, explored) : [];
+  const transfer =
+    transfers.length === 1
+      ? transfers[0]!
+      : (transfers.find((tr) => transferKey(tr) === trip.rolledTransfer) ?? null);
+  const restarts = open.length === 0 && transfers.length === 0 ? explorer.restarts(current, settings, explored, 3) : [];
+  return {
+    visited,
+    current,
+    choices,
+    open,
+    rolled,
+    faceWeights,
+    face,
+    streak,
+    explored,
+    hubRevisits,
+    tripExplored,
+    transfers,
+    transfer,
+    restarts,
+  };
+}
+
+function transferKey(tr: TransferRide): string {
+  return `${tr.option.key}@${tr.stops}`;
 }
 
 function startTrip(station: number): void {
@@ -408,7 +441,7 @@ function renderTrip(trip: Trip): void {
 /** "Walked to another station": continue from a different station before rolling. */
 function walkHtml(trip: Trip): string {
   // Once a roll is made and re-rolls are off, walking away would be a way to dodge it.
-  const rollMade = trip.rolledOption !== null || trip.rolledStops !== null;
+  const rollMade = trip.rolledOption !== null || trip.rolledStops !== null || Boolean(trip.rolledTransfer);
   if (rollMade && !state.settings.allowRerolls) return "";
   return `
     <details class="card collapsible walk" data-section="walk"${openAttr("walk", false)}>
@@ -539,20 +572,13 @@ function lineRollHtml(trip: Trip, view: TripView): string {
     )
     .join("");
 
-  let stuck = "";
-  if (total === 0) {
-    const revisitHelps = view.choices.some((c) => c.faces.some((f) => f.blocked === "visited"));
-    stuck = revisitHelps
-      ? `<p class="notice">${t.stuckRevisit} <button data-action="allow-revisit">${t.allowRevisit}</button></p>`
-      : `<p class="notice">${t.stuckSettings}</p>`;
-  }
+  if (total === 0) return stuckHtml(trip, view, blockedItems);
 
   return `
     <section class="card">
       <h3><span class="step">1</span> ${t.whichTrain}</h3>
-      <p class="muted">${total ? t.rollSummary(total, state.settings.maxWalkMin) : t.noOptions}${trip.onlyNew ? t.onlyNewActive : ""}${trip.allowRevisit ? t.revisitsAllowed : ""}</p>
-      ${total ? `<div id="line-slot" class="roll-slot">${slot}</div>` : ""}
-      ${stuck}
+      <p class="muted">${t.rollSummary(total, state.settings.maxWalkMin)}${trip.onlyNew ? t.onlyNewActive : ""}${trip.allowRevisit ? t.revisitsAllowed : ""}</p>
+      <div id="line-slot" class="roll-slot">${slot}</div>
       ${total > 1 && view.open.some((c) => c.boost > 1)
         ? `<p class="boost-note">${t.boostTrains(view.streak.count, lineBadge(view.streak.line), shownWeight(view.streak.weight))}</p>`
         : ""}
@@ -567,6 +593,119 @@ function lineRollHtml(trip: Trip, view: TripView): string {
              <ol class="options">${items}${blockedItems}</ol>
            </details>`
         : ""}
+    </section>`;
+}
+
+/** A transfer ride: line, how far, where, and (in lists) which lines you can change to there. */
+function transferCard(tr: TransferRide, extraClass = "", withOnward = true): string {
+  const dest = tr.path.at(-1)!;
+  const onward = [...new Set(tr.onward.map((o) => o.line))].map(lineBadge).join(" ");
+  return `<div class="option stop-card ${extraClass}">
+    <span class="num">${tr.stops}</span>
+    <span class="body">${lineBadge(tr.option.line)} ${esc(directionLabel(tr.option))}<br>
+      → <strong>${esc(stationName(dest))}</strong> <span class="ja">${esc(stationAltName(dest))}</span>
+      <small class="muted">(${t.stops(tr.stops)})</small>
+      ${withOnward ? `<br><small class="muted">${t.transferOnward}</small> ${onward}` : ""}</span>
+  </div>`;
+}
+
+/** Shortest direct ride from here to `station` (or its same-named platforms), if any line goes there. */
+function directRide(view: TripView, station: number): { option: RideOption; stops: number } | null {
+  const target = stations[station]!;
+  let best: { option: RideOption; stops: number } | null = null;
+  for (const { option } of view.choices) {
+    const line = lines[option.line]!;
+    for (let stops = 1; stops < line.stations.length && stops < (best?.stops ?? Infinity); stops++) {
+      const s = explorer.ride(option, stops)?.at(-1);
+      if (s === undefined) break; // past the terminus
+      if (explorer.keys[s] === explorer.keys[station] && distanceM(stations[s]!, target) <= COMPLEX_RADIUS_M) {
+        best = { option, stops };
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Every roll from here is explored. Replaces the normal "Which train?" card with a clearly
+ * different one: roll for a transfer, or walk to a nearby station, or (last) allow revisits.
+ */
+function stuckHtml(trip: Trip, view: TripView, blockedItems: string): string {
+  const revisitHelps = view.choices.some((c) => c.faces.some((f) => f.blocked === "visited"));
+  const revisit = revisitHelps
+    ? `<p class="muted small fallback">${t.revisitFallback} <button data-action="allow-revisit">${t.allowRevisit}</button></p>`
+    : "";
+  const why = view.choices.length
+    ? `<details class="all-options" data-section="lines"${openAttr("lines", false)}>
+         <summary>${t.whyStuck(view.choices.length)}</summary>
+         <ol class="options">${blockedItems}</ol>
+       </details>`
+    : "";
+
+  let body: string;
+  if (view.transfers.length) {
+    const tr = view.transfer;
+    const single = view.transfers.length === 1;
+    const slot = tr
+      ? transferCard(tr, "chosen", false)
+      : `<div class="option placeholder"><span class="num">?</span><span class="body">${t.transferPrompt(view.transfers.length)}</span></div>`;
+    const canRoll = !single && (!tr || state.settings.allowRerolls);
+    const list = view.transfers.map((x) => `<li>${transferCard(x, x === tr ? "chosen" : "")}</li>`).join("");
+    const go = tr
+      ? `<p class="transfer-go">${t.transferGo({
+          badge: lineBadge(tr.option.line),
+          direction: esc(directionLabel(tr.option)),
+          stops: tr.stops,
+          dest: esc(stationName(tr.path.at(-1)!)),
+          onward: [...new Set(tr.onward.map((o) => o.line))].map(lineBadge).join(" "),
+        })}</p>
+         <button class="primary big" data-action="arrive-transfer">${esc(t.gotOffTransfer(stationName(tr.path.at(-1)!)))}</button>`
+      : "";
+    body = `
+      <p class="stuck-what">${t.stuckWhat}</p>
+      <p class="stuck-now">${t.transferPlan}</p>
+      <div id="transfer-slot" class="roll-slot">${slot}</div>
+      ${single ? `<p class="muted small">${t.onlyOneTransfer}</p>` : ""}
+      ${canRoll ? `<button class="primary" data-action="roll-transfer">${tr ? t.rerollTransfer : t.rollTransfer}</button>` : ""}
+      ${go}
+      <details class="all-options" data-section="transfers"${openAttr("transfers", false)}>
+        <summary>${t.showAllTransfers(view.transfers.length)}</summary>
+        <ol class="options">${list}</ol>
+      </details>`;
+  } else if (view.restarts.length) {
+    const here = stations[view.current]!;
+    const rows = view.restarts
+      .map(({ station, distanceM: d }) => {
+        const ride = directRide(view, station);
+        const minutes = Math.max(1, Math.round(walkMinutes(here, stations[station]!)));
+        const rideButton = ride
+          ? `<button data-action="ride-to" data-option="${esc(ride.option.key)}" data-stops="${ride.stops}">
+               ${lineBadge(ride.option.line)} ${t.rideThere(ride.stops)}</button>`
+          : "";
+        return `<li class="restart">
+          <span><strong>${esc(stationName(station))}</strong> <span class="ja">${esc(stationAltName(station))}</span>
+            <br><small class="muted">${(d / 1000).toFixed(1)} km</small></span>
+          <span class="row">
+            <button data-action="walk" data-station="${station}">${t.walkThere(minutes)}</button>
+            ${rideButton}
+          </span></li>`;
+      })
+      .join("");
+    body = `
+      <p class="stuck-what">${t.restartWhat}</p>
+      <p class="stuck-now">${t.restartPlan}</p>
+      <ol class="restarts">${rows}</ol>`;
+  } else {
+    body = `<p class="stuck-what">${t.stuckSettings}</p>`;
+  }
+
+  return `
+    <section class="card stuck">
+      <h3><span class="step">!</span> ${t.stuckTitle}</h3>
+      ${body}
+      ${revisit}
+      ${why}
     </section>`;
 }
 
@@ -790,9 +929,12 @@ function updateMap(trip: Trip, view: TripView): void {
     points.push(...coords);
     previous = path.at(-1)!;
   }
-  if (view.rolled && view.face) {
-    const coords = [view.rolled.option.board, ...view.face.path].map(latlng);
-    L.polyline(coords, { color: lines[view.rolled.option.line]!.color, weight: 5, dashArray: "8 8", opacity: 0.8 }).addTo(mapLayer!);
+  const pending = view.rolled && view.face
+    ? { option: view.rolled.option, path: view.face.path }
+    : view.transfer;
+  if (pending) {
+    const coords = [pending.option.board, ...pending.path].map(latlng);
+    L.polyline(coords, { color: lines[pending.option.line]!.color, weight: 5, dashArray: "8 8", opacity: 0.8 }).addTo(mapLayer!);
     points.push(...coords);
   }
   // Numbered in travel order: S for the start, then the stop number (same as "Stop N" and the journey log).
@@ -822,7 +964,7 @@ function updateMap(trip: Trip, view: TripView): void {
 
   // Re-frame only when the route changes, so manual panning sticks between renders.
   framing = {
-    key: `${trip.startedAt}:${trip.steps.length}:${view.face ? view.rolled!.option.key + view.face.stops : ""}`,
+    key: `${trip.startedAt}:${trip.steps.length}:${pending ? pending.option.key + pending.path.length : ""}`,
     bounds: points.length > 1 ? L.latLngBounds(points) : null,
     center: latlng(view.current),
   };
@@ -844,6 +986,23 @@ async function spin(count: number, final: number, show: (i: number) => void): Pr
 }
 
 // ---------- actions ----------
+
+function clearRolls(trip: Trip): void {
+  trip.rolledOption = null;
+  trip.rolledStops = null;
+  trip.rolledTransfer = null;
+}
+
+/** Travel a ride: log it, record the visit, and start fresh at the destination. */
+function recordStep(trip: Trip, option: RideOption, stops: number, path: number[]): void {
+  const at = new Date().toISOString();
+  const ids = path.map((i) => stations[i]!.id);
+  trip.steps.push({ line: lines[option.line]!.id, board: stations[option.board]!.id, stops, path: ids, at });
+  recordVisit(state.history, ids.at(-1)!, at);
+  clearRolls(trip);
+  trip.allowRevisit = false;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
 
 async function handleAction(action: string, target: HTMLElement): Promise<void> {
   const trip = state.trip;
@@ -914,20 +1073,34 @@ async function handleAction(action: string, target: HTMLElement): Promise<void> 
     case "arrive": {
       const { rolled, face } = tripView(trip);
       if (!rolled || !face) return;
-      const at = new Date().toISOString();
-      const path = face.path.map((i) => stations[i]!.id);
-      trip.steps.push({
-        line: lines[rolled.option.line]!.id,
-        board: stations[rolled.option.board]!.id,
-        stops: face.stops,
-        path,
-        at,
-      });
-      recordVisit(state.history, path.at(-1)!, at);
-      trip.rolledOption = null;
-      trip.rolledStops = null;
-      trip.allowRevisit = false;
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      recordStep(trip, rolled.option, face.stops, face.path);
+      break;
+    }
+    case "roll-transfer": {
+      const { transfers, transfer } = tripView(trip);
+      if (transfers.length < 2 || (transfer && !state.settings.allowRerolls)) return;
+      const pick = randomInt(transfers.length);
+      const slot = app.querySelector<HTMLElement>("#transfer-slot")!;
+      const cards = transfers.map((tr) => transferCard(tr, "spinning", false));
+      await spin(cards.length, pick, (i) => (slot.innerHTML = cards[i]!));
+      trip.rolledTransfer = transferKey(transfers[pick]!);
+      break;
+    }
+    case "arrive-transfer": {
+      const { transfer } = tripView(trip);
+      if (!transfer) return;
+      recordStep(trip, transfer.option, transfer.stops, transfer.path);
+      break;
+    }
+    case "ride-to": {
+      // A chosen (not rolled) ride to a suggested restart station, offered only when stuck.
+      const view = tripView(trip);
+      if (view.open.length || view.transfers.length) return;
+      const option = view.choices.find((c) => c.option.key === target.dataset.option)?.option;
+      const stops = Number(target.dataset.stops);
+      const path = option && explorer.ride(option, stops);
+      if (!option || !path) return;
+      recordStep(trip, option, stops, path);
       break;
     }
     case "walk": {
@@ -936,21 +1109,20 @@ async function handleAction(action: string, target: HTMLElement): Promise<void> 
       const at = new Date().toISOString();
       trip.steps.push({ line: null, board: stations[from]!.id, stops: 0, path: [dest], at });
       recordVisit(state.history, dest, at);
-      trip.rolledOption = null;
-      trip.rolledStops = null;
+      clearRolls(trip);
       trip.allowRevisit = false;
       window.scrollTo({ top: 0, behavior: "smooth" });
       break;
     }
     case "allow-revisit":
       trip.allowRevisit = true;
+      clearRolls(trip);
       break;
     case "undo": {
       if (!confirm(t.confirmUndo)) return;
       const undone = trip.steps.pop();
       if (undone) removeVisit(state.history, undone.path.at(-1)!, undone.at);
-      trip.rolledOption = null;
-      trip.rolledStops = null;
+      clearRolls(trip);
       break;
     }
     case "end-trip":
@@ -1113,8 +1285,7 @@ settingsDialog.addEventListener("close", () => {
   );
   state.settings = updated;
   if (state.trip && rulesChanged) {
-    state.trip.rolledOption = null;
-    state.trip.rolledStops = null;
+    clearRolls(state.trip);
   }
   saveState(state);
   render();
