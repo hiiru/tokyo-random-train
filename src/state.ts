@@ -12,6 +12,8 @@ export interface Settings extends RuleSettings {
   lineChangeBoost: boolean;
   /** Lines you've got off at more stations of (this trip) are slightly less likely. */
   preferFreshLines: boolean;
+  /** Favour continuing in the same direction, and stops you haven't ridden through, to reduce ping-pong. */
+  keepDirection: boolean;
   /** Show dice weights as decimals (×0.77) instead of icons and whole numbers. */
   exactWeights: boolean;
   lang: Lang;
@@ -63,6 +65,7 @@ export const DEFAULT_SETTINGS: Settings = {
   onlyNew: false,
   lineChangeBoost: true,
   preferFreshLines: true,
+  keepDirection: true,
   exactWeights: false,
   lang: navigator.language.startsWith("ja") ? "ja" : "en",
 };

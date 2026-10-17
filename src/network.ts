@@ -192,6 +192,15 @@ export function lineFatigue(visited: number): number {
   return Math.max(MIN_LINE_FATIGUE, 1 / (1 + 0.15 * visited));
 }
 
+/**
+ * Momentum on the train die after a ride on line L: the same direction of L is more likely,
+ * the opposite less. Their sum stays 2, so staying on L overall is neither favoured nor not.
+ */
+export const KEEP_DIRECTION_WEIGHT = 1.5;
+export const REVERSE_DIRECTION_WEIGHT = 0.5;
+/** Stops-die weight for landing on a station you've already ridden through on this trip. */
+export const RIDDEN_THROUGH_WEIGHT = 0.5;
+
 /** Platform pair → hand-estimated minutes; see src/data/transfers.ts. */
 export interface TransferCorrection {
   from: string[];
@@ -297,6 +306,16 @@ export class Explorer {
       }
     }
     return result;
+  }
+
+  /** Direction (+1 towards later stations, -1 earlier) of a ride from `board` whose first stop is `next`. */
+  rideDirection(board: number, next: number): 1 | -1 {
+    const line = this.lines[this.stations[board]!.line]!;
+    const count = line.stations.length;
+    const from = this.positions[board]![0]!;
+    const to = this.positions[next]![0]!;
+    if (line.loop) return (to - from + count) % count === 1 ? 1 : -1;
+    return to > from ? 1 : -1;
   }
 
   /** Stations passed riding `stops` stations from the option's boarding point; null past the terminus. */

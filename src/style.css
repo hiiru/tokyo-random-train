@@ -419,3 +419,19 @@ dialog menu button { flex: 1; margin: 0; }
 .stuck-now { line-height: 1.55; margin: 0 0 10px; }
 .transfer-go { line-height: 1.8; margin: 10px 0 4px; }
 .fallback { margin-top: 14px; }
+/* Direction momentum and ridden-through stops */
+.dir-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
+  vertical-align: middle;
+  cursor: help;
+}
+.dir-icon.keep { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+.dir-icon.reverse { background: var(--line-soft); color: var(--muted); }
+.face.ridden { border-style: dotted; color: var(--muted); }
+.face.mini.ridden { color: var(--muted); }

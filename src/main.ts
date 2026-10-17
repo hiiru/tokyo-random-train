@@ -9,6 +9,9 @@ import {
   sameLineStreak,
   lineChangeWeight,
   lineFatigue,
+  KEEP_DIRECTION_WEIGHT,
+  REVERSE_DIRECTION_WEIGHT,
+  RIDDEN_THROUGH_WEIGHT,
   nameKey,
   distanceM,
   walkMinutes,
@@ -128,13 +131,15 @@ interface Choice {
   option: RideOption;
   faces: Face[];
   open: Face[];
-  /** Train-die weight: line-change boost × line fatigue. */
+  /** Train-die weight: line-change boost × line fatigue × direction momentum. */
   weight: number;
   /** Line-change boost for this option (1 if none). */
   boost: number;
   /** Line fatigue factor (1 if none) and the stations of this line visited on this trip. */
   fatigue: number;
   visitedOnLine: number;
+  /** Direction momentum: >1 keeps the last ride's direction, <1 turns back, 1 otherwise. */
+  direction: number;
 }
 
 /** Rides in a row on one line, and the resulting line-change weight. */
@@ -153,8 +158,12 @@ interface TripView {
   /** Choices with at least one rollable face. */
   open: Choice[];
   rolled: Choice | null;
-  /** Stops-die weight per `rolled.open` face. */
+  /** Stops-die weight per `rolled.open` face (line-change boost × ridden-through factor). */
   faceWeights: number[];
+  /** Stations ridden through (not got off at) on this trip; less likely on the stops die. */
+  ridden: Set<number>;
+  /** The last ride's line and direction, when direction momentum applies. */
+  momentum: { line: number; dir: 1 | -1 } | null;
   /** The stops result; picked automatically when only one face is open. */
   face: Face | null;
   /** Stations off-limits as destinations (explored areas). */
@@ -209,25 +218,48 @@ function tripView(trip: Trip): TripView {
     visitedPerLine.set(line, (visitedPerLine.get(line) ?? 0) + 1);
   }
 
+  // Direction momentum and ridden-through stations, against ping-pong on one line.
+  const lastStep = trip.steps.at(-1);
+  const momentum =
+    settings.keepDirection && lastStep?.line
+      ? {
+          line: lineIndex.get(lastStep.line)!,
+          dir: explorer.rideDirection(stationIndex.get(lastStep.board)!, stationIndex.get(lastStep.path[0]!)!),
+        }
+      : null;
+  const ridden = new Set<number>();
+  if (settings.keepDirection) {
+    for (const step of trip.steps) {
+      if (step.line) for (const id of step.path.slice(0, -1)) ridden.add(stationIndex.get(id)!);
+    }
+  }
+
   const choices: Choice[] = explorer.options(current, settings.maxWalkMin).map((option) => {
     const faces = explorer.faces(option, settings, explored);
     const boost = option.line !== streak.line ? streak.weight : 1;
     const visitedOnLine = visitedPerLine.get(option.line) ?? 0;
     const fatigue = settings.preferFreshLines ? lineFatigue(visitedOnLine) : 1;
-    return { option, faces, open: faces.filter((f) => !f.blocked), weight: boost * fatigue, boost, fatigue, visitedOnLine };
+    const direction =
+      momentum?.line === option.line ? (momentum.dir === option.dir ? KEEP_DIRECTION_WEIGHT : REVERSE_DIRECTION_WEIGHT) : 1;
+    const weight = boost * fatigue * direction;
+    return { option, faces, open: faces.filter((f) => !f.blocked), weight, boost, fatigue, visitedOnLine, direction };
   });
   const open = choices.filter((c) => c.open.length > 0);
   // A single option needs no roll, same as a single stops face below.
   const rolled = open.length === 1 ? open[0]! : (open.find((c) => c.option.key === trip.rolledOption) ?? null);
   // Staying on the streak line: favour stops where you can change to another line.
+  // Stops you've ridden through on this trip are less likely (ping-pong).
   const faceWeights =
-    rolled?.open.map((f) =>
-      streak.weight > 1 &&
-      rolled.option.line === streak.line &&
-      explorer.hasOtherLine(f.path.at(-1)!, streak.line, settings.maxWalkMin)
-        ? streak.weight
-        : 1,
-    ) ?? [];
+    rolled?.open.map((f) => {
+      const dest = f.path.at(-1)!;
+      const change =
+        streak.weight > 1 &&
+        rolled.option.line === streak.line &&
+        explorer.hasOtherLine(dest, streak.line, settings.maxWalkMin)
+          ? streak.weight
+          : 1;
+      return change * (ridden.has(dest) ? RIDDEN_THROUGH_WEIGHT : 1);
+    }) ?? [];
   const face = !rolled
     ? null
     : rolled.open.length === 1
@@ -246,6 +278,8 @@ function tripView(trip: Trip): TripView {
     open,
     rolled,
     faceWeights,
+    ridden,
+    momentum,
     face,
     streak,
     explored,
@@ -525,17 +559,23 @@ function exploreHtml(view: TripView, atStart: boolean): string {
     </details>`;
 }
 
-/** Train-die weight markers: ×N boost and ↓ fatigue icons, or one exact ×0.00 badge. */
+/** Train-die weight markers: ×N boost, ➜/↩ direction and ↓ fatigue icons, or one exact ×0.00 badge. */
 function weightBadges(choice: Choice): string {
-  const fatigueTitle = esc(t.fatigueTitle(choice.visitedOnLine, choice.fatigue.toFixed(2)));
+  const titles = [
+    choice.direction > 1 ? t.keepDirectionTitle(choice.direction.toFixed(2)) : "",
+    choice.direction < 1 ? t.reverseDirectionTitle(choice.direction.toFixed(2)) : "",
+    choice.fatigue < 1 ? t.fatigueTitle(choice.visitedOnLine, choice.fatigue.toFixed(2)) : "",
+  ].filter(Boolean);
   if (state.settings.exactWeights) {
     if (choice.weight === 1) return "";
     const cls = choice.weight < 1 ? "boost fatigue" : "boost";
-    return ` <span class="${cls}"${choice.fatigue < 1 ? ` title="${fatigueTitle}"` : ""}>×${shownWeight(choice.weight)}</span>`;
+    return ` <span class="${cls}"${titles.length ? ` title="${esc(titles.join("\n"))}"` : ""}>×${shownWeight(choice.weight)}</span>`;
   }
   return (
     (choice.boost > 1 ? ` <span class="boost">×${shownWeight(choice.boost)}</span>` : "") +
-    (choice.fatigue < 1 ? ` <span class="fatigue-icon" title="${fatigueTitle}">↓</span>` : "")
+    (choice.direction > 1 ? ` <span class="dir-icon keep" title="${esc(titles[0]!)}">➜</span>` : "") +
+    (choice.direction < 1 ? ` <span class="dir-icon reverse" title="${esc(titles[0]!)}">↩</span>` : "") +
+    (choice.fatigue < 1 ? ` <span class="fatigue-icon" title="${esc(titles.at(-1)!)}">↓</span>` : "")
   );
 }
 
@@ -583,6 +623,9 @@ function lineRollHtml(trip: Trip, view: TripView): string {
         ? `<p class="boost-note">${t.boostTrains(view.streak.count, lineBadge(view.streak.line), shownWeight(view.streak.weight))}</p>`
         : ""}
       ${total > 1 && view.open.some((c) => c.fatigue < 1) ? `<p class="boost-note">${t.fatigueNote}</p>` : ""}
+      ${total > 1 && view.momentum && view.open.some((c) => c.direction !== 1)
+        ? `<p class="boost-note">${t.directionNote(lineBadge(view.momentum.line))}</p>`
+        : ""}
       ${total === 1 ? `<p class="muted small">${t.onlyOneTrain}</p>` : ""}
       ${total > 1 && (!view.rolled || state.settings.allowRerolls)
         ? `<button class="primary" data-action="roll-line">${view.rolled ? t.rerollTrain : t.rollTrain}</button>`
@@ -726,12 +769,21 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
     .map((f) => {
       const weight = weightByStops.get(f.stops) ?? 1;
       const past = f.blocked === "visited" && !view.tripExplored.has(f.path.at(-1)!);
-      const cls = [f.blocked ? `blocked ${f.blocked}` : "open", past ? "past" : "", face?.stops === f.stops ? "chosen" : "", weight > 1 ? "boosted" : ""];
-      const dest = f.path.length ? stationName(f.path.at(-1)!) : "";
-      const hub = !f.blocked && view.hubRevisits.has(f.path.at(-1)!) ? ` (${t.hubTag})` : "";
+      const dest = f.path.at(-1);
+      const ridden = !f.blocked && dest !== undefined && view.ridden.has(dest);
+      const cls = [
+        f.blocked ? `blocked ${f.blocked}` : "open",
+        past ? "past" : "",
+        ridden ? "ridden" : "",
+        face?.stops === f.stops ? "chosen" : "",
+        weight > 1 ? "boosted" : "",
+      ];
+      const name = dest !== undefined ? stationName(dest) : "";
+      const hub = !f.blocked && dest !== undefined && view.hubRevisits.has(dest) ? ` (${t.hubTag})` : "";
       const reason = past ? t.blockedPast : f.blocked ? t.blocked[f.blocked] : "";
-      const title = f.blocked ? `${dest ? `${dest}: ` : ""}${reason}` : dest + hub;
-      const boost = weight > 1 ? ` data-boost="×${shownWeight(weight)}"` : "";
+      const title = f.blocked ? `${name ? `${name}: ` : ""}${reason}` : name + hub + (ridden ? ` (${t.riddenTitle})` : "");
+      const shown = weight > 1 || (state.settings.exactWeights && weight !== 1);
+      const boost = shown ? ` data-boost="×${shownWeight(weight)}"` : "";
       return `<div class="face ${cls.join(" ")}" title="${esc(title)}"${boost}>${f.stops}</div>`;
     })
     .join("");
@@ -739,6 +791,7 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
   const boosted = !single && view.faceWeights.some((w) => w > 1);
   const hasShort = choice.faces.some((f) => f.blocked === "short");
   const hasPast = choice.faces.some((f) => f.blocked === "visited" && !view.tripExplored.has(f.path.at(-1)!));
+  const hasRidden = !single && choice.open.some((f) => view.ridden.has(f.path.at(-1)!));
   const slot = face
     ? stopCard(face, view.hubRevisits, "chosen")
     : `<div class="option placeholder"><span class="num">?</span><span class="body">${t.stopsPrompt(choice.open.length)}</span></div>`;
@@ -754,6 +807,7 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
         ${hasShort && !single ? `<span class="face mini blocked short">·</span> ${t.legendShort}` : ""}
         ${hasPast && !single ? `<span class="face mini blocked visited past">✕</span> ${t.legendPast}` : ""}
         ${boosted ? `<span class="face mini boosted-mini">×</span> ${t.legendBoost(shownWeight(view.streak.weight))}` : ""}
+        ${hasRidden ? `<span class="face mini ridden">·</span> ${t.legendRidden}` : ""}
       </p>
       ${single || (face && !state.settings.allowRerolls)
         ? ""
@@ -1248,6 +1302,10 @@ document.querySelector("#settings-button")!.addEventListener("click", () => {
       <span>${t.preferFreshLines}<br><small class="muted">${t.preferFreshLinesHint}</small></span>
     </label>
     <label class="check">
+      <input type="checkbox" name="keepDirection"${s.keepDirection ? " checked" : ""}>
+      <span>${t.keepDirection}<br><small class="muted">${t.keepDirectionHint}</small></span>
+    </label>
+    <label class="check">
       <input type="checkbox" name="exactWeights"${s.exactWeights ? " checked" : ""}>
       <span>${t.exactWeights}<br><small class="muted">${t.exactWeightsHint}</small></span>
     </label>
@@ -1277,6 +1335,7 @@ settingsDialog.addEventListener("close", () => {
     allowRerolls: data.get("allowRerolls") === "on",
     lineChangeBoost: data.get("lineChangeBoost") === "on",
     preferFreshLines: data.get("preferFreshLines") === "on",
+    keepDirection: data.get("keepDirection") === "on",
     exactWeights: data.get("exactWeights") === "on",
   };
   // Pending rolls were made under the old rules; toggling re-rolls alone must not reset them.

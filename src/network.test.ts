@@ -184,6 +184,16 @@ describe("when every roll is explored", () => {
   });
 });
 
+describe("ride direction", () => {
+  test("follows the line order, wrapping on loop lines", () => {
+    expect(explorer.rideDirection(station("Shiinamachi", "Seibu.Ikebukuro"), station("Higashi-Nagasaki", "Seibu.Ikebukuro"))).toBe(1);
+    expect(explorer.rideDirection(station("Ekoda", "Seibu.Ikebukuro"), station("Higashi-Nagasaki", "Seibu.Ikebukuro"))).toBe(-1);
+    // Osaki is first in the Yamanote list; Shinagawa is last, one stop back across the wrap.
+    expect(explorer.rideDirection(station("Osaki", "JR-East.Yamanote"), station("Shinagawa", "JR-East.Yamanote"))).toBe(-1);
+    expect(explorer.rideDirection(station("Shinagawa", "JR-East.Yamanote"), station("Osaki", "JR-East.Yamanote"))).toBe(1);
+  });
+});
+
 describe("hubs", () => {
   test("big interchanges count as hubs, ordinary transfer stations don't", () => {
     expect(explorer.isHub(station("Shinjuku", "JR-East.Yamanote"), 5)).toBe(true);
