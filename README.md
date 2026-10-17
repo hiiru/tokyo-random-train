@@ -39,6 +39,10 @@ bun test           # rule tests against the real network data
 bun run typecheck
 ```
 
+## Deployment
+
+`.github/workflows/pages.yml` builds and publishes to GitHub Pages on every push to `master` (and manually via "Run workflow"): install, typecheck, test, `bun run build`, deploy `dist/`. Pages must be enabled with source "GitHub Actions" in the repo settings. The built site uses relative paths, so it works under `https://<user>.github.io/<repo>/`.
+
 ## Settings (⚙️)
 
 - **Walk limit** (0–10 min): which nearby lines count as "at this station". This setting also controls how far around a visited station counts as explored.
