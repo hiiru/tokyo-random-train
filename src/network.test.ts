@@ -37,15 +37,15 @@ const lineIds = (from: number, maxWalkMin: number) =>
 
 describe("lines at a station", () => {
   test("include lines within a casual walk, not further", () => {
-    // Bakurocho (Tozai Line, underground) is ~9 min away from the street-level JR platform.
+    // Bakurocho (Sobu Rapid Line, underground) is ~9 min away from the street-level JR platform.
     const asakusabashi = station("Asakusabashi", "JR-East.ChuoSobuLocal");
-    expect(lineIds(asakusabashi, 5)).toEqual(new Set(["JR-East.ChuoSobuLocal", "Toei.Oedo"]));
-    expect(lineIds(asakusabashi, 10).has("TokyoMetro.Tozai")).toBe(true);
+    expect(lineIds(asakusabashi, 5)).toEqual(new Set(["JR-East.ChuoSobuLocal", "Toei.Asakusa"]));
+    expect(lineIds(asakusabashi, 9).has("JR-East.SobuRapid")).toBe(true);
   });
 
   test("same-named stations count as one station even with no walking allowed", () => {
     const asakusabashi = station("Asakusabashi", "JR-East.ChuoSobuLocal");
-    expect(lineIds(asakusabashi, 0)).toEqual(new Set(["JR-East.ChuoSobuLocal", "Toei.Oedo"]));
+    expect(lineIds(asakusabashi, 0)).toEqual(new Set(["JR-East.ChuoSobuLocal", "Toei.Asakusa"]));
     expect(lineIds(station("Kanda", "JR-East.Yamanote"), 0).has("TokyoMetro.Ginza")).toBe(true);
   });
 
@@ -60,9 +60,9 @@ describe("lines at a station", () => {
 
   test("changing between street level and underground adds time", () => {
     const jr = station("Asakusabashi", "JR-East.ChuoSobuLocal");
-    const oedo = station("Asakusabashi", "Toei.Oedo");
-    expect(explorer.walk(jr, oedo)).toBeCloseTo(3.4 + 0.5, 1);
-    expect(explorer.walk(jr, oedo)).toBeLessThanOrEqual(5);
+    const toei = station("Asakusabashi", "Toei.Asakusa");
+    expect(explorer.walk(jr, toei)).toBeCloseTo(3.5 + 0.5, 1);
+    expect(explorer.walk(jr, toei)).toBeLessThanOrEqual(5);
   });
 
   test("a walkable station brings its same-named complex along", () => {
@@ -95,11 +95,7 @@ describe("riding", () => {
 
   test("the Oedo Line's loop runs through Tochomae towards Hikarigaoka", () => {
     const shinjuku = station("Shinjuku", "Toei.Oedo");
-    expect(names(explorer.ride(option(shinjuku, "Toei.Oedo", "Tochomae"), 3)!)).toEqual([
-      "Tochomae",
-      "Nishi-shinjuku-gochome",
-      "Kasuga",
-    ]);
+    expect(names(explorer.ride(option(shinjuku, "Toei.Oedo", "Tochomae"), 2)!)).toEqual(["Tochomae", "Nishi-shinjuku-gochome"]);
   });
 
   test("faces past the terminus are blocked", () => {
@@ -117,10 +113,10 @@ describe("exploration rules", () => {
   test("stations in an explored area are blocked, including other lines there", () => {
     const ryogoku = station("Ryogoku", "JR-East.ChuoSobuLocal");
     const explored = explorer.visitedArea([station("Asakusabashi", "JR-East.ChuoSobuLocal")], rules.maxWalkMin);
-    expect(explored.has(station("Asakusabashi", "Toei.Oedo"))).toBe(true);
-    const eastbound = explorer.faces(option(ryogoku, "JR-East.ChuoSobuLocal", "Asakusabashi"), rules, explored);
-    expect(eastbound[0]!.blocked).toBe("visited");
-    expect(eastbound[1]!.blocked).toBe(null);
+    expect(explored.has(station("Asakusabashi", "Toei.Asakusa"))).toBe(true);
+    const westbound = explorer.faces(option(ryogoku, "JR-East.ChuoSobuLocal", "Asakusabashi"), rules, explored);
+    expect(westbound[0]!.blocked).toBe("visited");
+    expect(westbound[1]!.blocked).toBe(null);
   });
 
   test("destinations outside the play area are blocked", () => {
@@ -146,12 +142,12 @@ describe("exploration rules", () => {
 
   test("the minimum is ignored when only shorter rides are unexplored", () => {
     const ryogoku = station("Ryogoku", "JR-East.ChuoSobuLocal");
-    // Explore everything 2–6 stops eastbound, so only Asakusabashi (1 stop) stays open.
+    // Explore everything 2–6 stops westbound, so only Asakusabashi (1 stop) stays open.
     const explored = new Set(
-      ["Okubo", "Shinjuku", "Yoyogi", "Sendagaya", "Shinanomachi"].map((n) => station(n, "JR-East.ChuoSobuLocal")),
+      ["Akihabara", "Ochanomizu", "Suidobashi", "Iidabashi", "Ichigaya"].map((n) => station(n, "JR-East.ChuoSobuLocal")),
     );
-    const eastbound = explorer.faces(option(ryogoku, "JR-East.ChuoSobuLocal", "Asakusabashi"), { ...rules, minStops: 3 }, explored);
-    expect(eastbound.map((f) => f.blocked)).toEqual([null, "visited", "visited", "visited", "visited", "visited"]);
+    const westbound = explorer.faces(option(ryogoku, "JR-East.ChuoSobuLocal", "Asakusabashi"), { ...rules, minStops: 3 }, explored);
+    expect(westbound.map((f) => f.blocked)).toEqual([null, "visited", "visited", "visited", "visited", "visited"]);
   });
 });
 
