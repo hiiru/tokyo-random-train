@@ -137,10 +137,10 @@ export function weightedIndex(weights: number[], roll: number): number {
   throw new RangeError(`roll ${roll} outside total weight`);
 }
 
-/** Random index with probability proportional to its weight (resolution 0.1). */
+/** Random index with probability proportional to its weight (resolution 0.01). */
 export function weightedRandom(weights: number[]): number {
-  const tenths = weights.map((w) => Math.round(w * 10));
-  return weightedIndex(tenths, randomInt(tenths.reduce((sum, w) => sum + w, 0)));
+  const hundredths = weights.map((w) => Math.round(w * 100));
+  return weightedIndex(hundredths, randomInt(hundredths.reduce((sum, w) => sum + w, 0)));
 }
 
 /** Rides in a row on the same line at the end of the trip so far. */
@@ -163,6 +163,17 @@ export function lineChangeWeight(streak: number): number {
   if (streak < STREAK_THRESHOLD) return 1;
   const step = (MAX_LINE_CHANGE_WEIGHT - 2) / (MAX_WEIGHT_STREAK - STREAK_THRESHOLD);
   return Math.min(MAX_LINE_CHANGE_WEIGHT, Math.round((2 + (streak - STREAK_THRESHOLD) * step) * 10) / 10);
+}
+
+/** Floor for line fatigue, so a much-visited line stays rollable. */
+const MIN_LINE_FATIGUE = 0.5;
+
+/**
+ * Weight factor for a line you've already got off at `visited` stations of on this trip:
+ * 1 → 0.87 → 0.77 → 0.69 …, never below 0.5.
+ */
+export function lineFatigue(visited: number): number {
+  return Math.max(MIN_LINE_FATIGUE, 1 / (1 + 0.15 * visited));
 }
 
 /** Platform pair → hand-estimated minutes; see src/data/transfers.ts. */

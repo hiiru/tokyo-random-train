@@ -8,6 +8,7 @@ import {
   weightedRandom,
   sameLineStreak,
   lineChangeWeight,
+  lineFatigue,
   nameKey,
   distanceM,
   COMPLEX_RADIUS_M,
@@ -99,9 +100,9 @@ function walkLabel(minutes: number): string {
   return minutes < 0.5 ? t.here : t.walkMin(Math.max(1, Math.round(minutes)));
 }
 
-/** Dice weights carry tenths (2.4×); the UI shows whole numbers, which are easier to read. */
-function shownWeight(weight: number): number {
-  return Math.round(weight);
+/** Weights carry decimals; by default the UI shows whole numbers, or two decimals for numbers fans. */
+function shownWeight(weight: number): string {
+  return state.settings.exactWeights ? weight.toFixed(2) : String(Math.round(weight));
 }
 
 /** Why a line + direction has no rollable face. */
@@ -124,8 +125,13 @@ interface Choice {
   option: RideOption;
   faces: Face[];
   open: Face[];
-  /** Weight on the train die (1 unless the line-change nudge favours it). */
+  /** Train-die weight: line-change boost × line fatigue. */
   weight: number;
+  /** Line-change boost for this option (1 if none). */
+  boost: number;
+  /** Line fatigue factor (1 if none) and the stations of this line visited on this trip. */
+  fatigue: number;
+  visitedOnLine: number;
 }
 
 /** Rides in a row on one line, and the resulting line-change weight. */
@@ -168,11 +174,19 @@ function tripView(trip: Trip): TripView {
     line: count ? lineIndex.get(trip.steps.at(-1)!.line)! : -1,
     weight: settings.lineChangeBoost ? lineChangeWeight(count) : 1,
   };
+  // Stations got off at on this trip, per line (the start doesn't count: you didn't ride there).
+  const visitedPerLine = new Map<number, number>();
+  for (const step of trip.steps) {
+    const line = stations[stationIndex.get(step.path.at(-1)!)!]!.line;
+    visitedPerLine.set(line, (visitedPerLine.get(line) ?? 0) + 1);
+  }
 
   const choices: Choice[] = explorer.options(current, settings.maxWalkMin).map((option) => {
     const faces = explorer.faces(option, settings, explored);
-    const weight = option.line !== streak.line ? streak.weight : 1;
-    return { option, faces, open: faces.filter((f) => !f.blocked), weight };
+    const boost = option.line !== streak.line ? streak.weight : 1;
+    const visitedOnLine = visitedPerLine.get(option.line) ?? 0;
+    const fatigue = settings.preferFreshLines ? lineFatigue(visitedOnLine) : 1;
+    return { option, faces, open: faces.filter((f) => !f.blocked), weight: boost * fatigue, boost, fatigue, visitedOnLine };
   });
   const open = choices.filter((c) => c.open.length > 0);
   // A single option needs no roll, same as a single stops face below.
@@ -385,12 +399,26 @@ function exploreHtml(view: TripView, atStart: boolean): string {
     </details>`;
 }
 
+/** Train-die weight markers: ×N boost and ↓ fatigue icons, or one exact ×0.00 badge. */
+function weightBadges(choice: Choice): string {
+  const fatigueTitle = esc(t.fatigueTitle(choice.visitedOnLine, choice.fatigue.toFixed(2)));
+  if (state.settings.exactWeights) {
+    if (choice.weight === 1) return "";
+    const cls = choice.weight < 1 ? "boost fatigue" : "boost";
+    return ` <span class="${cls}"${choice.fatigue < 1 ? ` title="${fatigueTitle}"` : ""}>×${shownWeight(choice.weight)}</span>`;
+  }
+  return (
+    (choice.boost > 1 ? ` <span class="boost">×${shownWeight(choice.boost)}</span>` : "") +
+    (choice.fatigue < 1 ? ` <span class="fatigue-icon" title="${fatigueTitle}">↓</span>` : "")
+  );
+}
+
 function optionCard(choice: Choice, face: number, extraClass = ""): string {
   const { option } = choice;
   const next = explorer.ride(option, 1)![0]!;
   return `<div class="option ${extraClass}">
     <span class="num">${face}</span>
-    <span class="body">${lineBadge(option.line)}${choice.weight > 1 ? ` <span class="boost">×${shownWeight(choice.weight)}</span>` : ""}<br>
+    <span class="body">${lineBadge(option.line)}${weightBadges(choice)}<br>
       ${esc(directionLabel(option))} · ${t.next(esc(stationName(next)))}
       ${option.walkMin >= 0.5 ? `<br><small class="muted">${esc(t.from(stationName(option.board)))}</small>` : ""}</span>
     <span class="walk">${walkLabel(option.walkMin)}</span>
@@ -432,9 +460,10 @@ function lineRollHtml(trip: Trip, view: TripView): string {
       <p class="muted">${total ? t.rollSummary(total, state.settings.maxWalkMin) : t.noOptions}${trip.onlyNew ? t.onlyNewActive : ""}${trip.allowRevisit ? t.revisitsAllowed : ""}</p>
       ${total ? `<div id="line-slot" class="roll-slot">${slot}</div>` : ""}
       ${stuck}
-      ${total > 1 && view.open.some((c) => c.weight > 1)
+      ${total > 1 && view.open.some((c) => c.boost > 1)
         ? `<p class="boost-note">${t.boostTrains(view.streak.count, lineBadge(view.streak.line), shownWeight(view.streak.weight))}</p>`
         : ""}
+      ${total > 1 && view.open.some((c) => c.fatigue < 1) ? `<p class="boost-note">${t.fatigueNote}</p>` : ""}
       ${total === 1 ? `<p class="muted small">${t.onlyOneTrain}</p>` : ""}
       ${total > 1 && (!view.rolled || state.settings.allowRerolls)
         ? `<button class="primary" data-action="roll-line">${view.rolled ? t.rerollTrain : t.rollTrain}</button>`
@@ -921,6 +950,14 @@ document.querySelector("#settings-button")!.addEventListener("click", () => {
       <input type="checkbox" name="lineChangeBoost"${s.lineChangeBoost ? " checked" : ""}>
       <span>${t.lineChangeBoost}<br><small class="muted">${t.lineChangeBoostHint}</small></span>
     </label>
+    <label class="check">
+      <input type="checkbox" name="preferFreshLines"${s.preferFreshLines ? " checked" : ""}>
+      <span>${t.preferFreshLines}<br><small class="muted">${t.preferFreshLinesHint}</small></span>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="exactWeights"${s.exactWeights ? " checked" : ""}>
+      <span>${t.exactWeights}<br><small class="muted">${t.exactWeightsHint}</small></span>
+    </label>
     <p class="muted small">${t.settingsNote}</p>
     <menu>
       <button value="cancel" formnovalidate>${t.cancel}</button>
@@ -946,6 +983,8 @@ settingsDialog.addEventListener("close", () => {
     minStops: Number(data.get("minStops")),
     allowRerolls: data.get("allowRerolls") === "on",
     lineChangeBoost: data.get("lineChangeBoost") === "on",
+    preferFreshLines: data.get("preferFreshLines") === "on",
+    exactWeights: data.get("exactWeights") === "on",
   };
   // Pending rolls were made under the old rules; toggling re-rolls alone must not reset them.
   const rulesChanged = (["maxWalkMin", "areaKm", "dieSides", "minStops"] as const).some(

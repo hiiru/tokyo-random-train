@@ -73,11 +73,14 @@ const en = {
   stopsPrompt: (n: number) => `Roll to pick one of ${n} destinations`,
   legendBlocked: "explored, out of area, or past the end of the line",
   legendShort: "below your minimum ride",
-  legendBoost: (factor: number) => `${factor}× as likely: you can change lines there`,
-  boostTrains: (n: number, line: string, factor: number) =>
+  legendBoost: (factor: string) => `${factor}× as likely: you can change lines there`,
+  boostTrains: (n: number, line: string, factor: string) =>
     `🔁 ${n} rides in a row on the ${line}: other lines are ${factor}× as likely.`,
-  boostStops: (n: number, line: string, factor: number) =>
+  boostStops: (n: number, line: string, factor: string) =>
     `🔁 ${n} rides in a row on the ${line}: stops where you can change lines are ${factor}× as likely.`,
+  fatigueNote: "↓ Lines you've already got off at on this trip are a bit less likely.",
+  fatigueTitle: (n: number, factor: string) =>
+    `${plural(n, "station")} of this line visited on this trip: ${factor}× as likely`,
   onlyOneFace: "Only one stop count is possible, so no roll needed.",
   onlyOneTrain: "Only one train is possible from here, so no roll needed.",
   rollStops: "🎲 Roll the stops",
@@ -124,6 +127,10 @@ const en = {
   lineChangeBoost: "Nudge towards changing lines",
   lineChangeBoostHint:
     "After 3 rides in a row on one line, other lines and transfer stations get extra weight: 2×, rising gradually to 4× after 8 rides.",
+  preferFreshLines: "Prefer less-visited lines",
+  preferFreshLinesHint: "Each station you got off at on a line makes it a bit less likely on the train die (0.87×, 0.77×, … never below 0.5×).",
+  exactWeights: "Show exact dice weights",
+  exactWeightsHint: "Show every weight as a decimal (×2.40, ×0.77) instead of icons and whole numbers.",
   settingsNote: "Changing the walk limit, play area or die cancels any roll you haven't travelled yet.",
   cancel: "Cancel",
   save: "Save",
@@ -205,10 +212,12 @@ const ja: Messages = {
   stopsPrompt: (n: number) => `${n}駅からサイコロで決定`,
   legendBlocked: "探検済み・エリア外・終点の先",
   legendShort: "最低駅数未満",
-  legendBoost: (factor: number) => `${factor}倍出やすい（乗り換え可能）`,
-  boostTrains: (n: number, line: string, factor: number) => `🔁 ${line}に${n}回連続：他の路線が${factor}倍出やすくなります。`,
-  boostStops: (n: number, line: string, factor: number) =>
+  legendBoost: (factor: string) => `${factor}倍出やすい（乗り換え可能）`,
+  boostTrains: (n: number, line: string, factor: string) => `🔁 ${line}に${n}回連続：他の路線が${factor}倍出やすくなります。`,
+  boostStops: (n: number, line: string, factor: string) =>
     `🔁 ${line}に${n}回連続：乗り換えできる駅が${factor}倍出やすくなります。`,
+  fatigueNote: "↓ この旅で降りたことのある路線は少し出にくくなります。",
+  fatigueTitle: (n: number, factor: string) => `この旅でこの路線の駅に${n}回降車：${factor}倍`,
   onlyOneFace: "行ける駅数が一つだけなので、サイコロは不要です。",
   onlyOneTrain: "ここから乗れる電車は一つだけなので、サイコロは不要です。",
   rollStops: "🎲 駅数を決める",
@@ -249,6 +258,10 @@ const ja: Messages = {
   allowRerollsHint: "オフ: 本物のサイコロのように、出た目は変えられません。",
   lineChangeBoost: "路線の乗り換えを後押し",
   lineChangeBoostHint: "同じ路線に3回連続で乗ると、他の路線や乗り換え駅が出やすくなります（2倍から少しずつ上がり、8回で4倍）。",
+  preferFreshLines: "あまり乗っていない路線を優先",
+  preferFreshLinesHint: "路線の駅で降りるたびに、その路線が少し出にくくなります（0.87倍、0.77倍…最低0.5倍）。",
+  exactWeights: "サイコロの重みを正確に表示",
+  exactWeightsHint: "アイコンや整数の代わりに、すべての重みを小数で表示します（×2.40、×0.77）。",
   settingsNote: "徒歩上限・プレイエリア・サイコロを変えると、まだ乗っていないサイコロの結果は取り消されます。",
   cancel: "キャンセル",
   save: "保存",

@@ -10,6 +10,10 @@ export interface Settings extends RuleSettings {
   onlyNew: boolean;
   /** Weight the dice towards changing lines after several rides on the same one. */
   lineChangeBoost: boolean;
+  /** Lines you've got off at more stations of (this trip) are slightly less likely. */
+  preferFreshLines: boolean;
+  /** Show dice weights as decimals (×0.77) instead of icons and whole numbers. */
+  exactWeights: boolean;
   lang: Lang;
 }
 
@@ -55,6 +59,8 @@ export const DEFAULT_SETTINGS: Settings = {
   allowRerolls: false,
   onlyNew: false,
   lineChangeBoost: true,
+  preferFreshLines: true,
+  exactWeights: false,
   lang: navigator.language.startsWith("ja") ? "ja" : "en",
 };
 

@@ -4,6 +4,7 @@ import { TRANSFER_CORRECTIONS } from "./data/transfers.ts";
 import {
   Explorer,
   lineChangeWeight,
+  lineFatigue,
   sameLineStreak,
   weightedIndex,
   type Network,
@@ -151,6 +152,12 @@ describe("exploration rules", () => {
     );
     const eastbound = explorer.faces(option(ryogoku, "JR-East.ChuoSobuLocal", "Asakusabashi"), { ...rules, minStops: 3 }, explored);
     expect(eastbound.map((f) => f.blocked)).toEqual([null, "visited", "visited", "visited", "visited", "visited"]);
+  });
+});
+
+describe("line fatigue", () => {
+  test("each visited station lowers the weight a little, never below half", () => {
+    expect([0, 1, 2, 3, 5, 7, 20].map((n) => Number(lineFatigue(n).toFixed(2)))).toEqual([1, 0.87, 0.77, 0.69, 0.57, 0.5, 0.5]);
   });
 });
 

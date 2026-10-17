@@ -384,3 +384,18 @@ dialog menu button { flex: 1; margin: 0; }
 .show-numbers .stop-marker.current > span { width: 28px; height: 28px; font-size: 13px; }
 .stop-marker.inline { display: inline-grid; vertical-align: middle; margin-right: 4px; }
 .stop-marker.inline > span { box-shadow: none; }
+/* Line fatigue: slightly less likely */
+.boost.fatigue { background: var(--muted); }
+.fatigue-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--line-soft);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  vertical-align: middle;
+  cursor: help;
+}
