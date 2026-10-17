@@ -1,0 +1,940 @@
+import "leaflet/dist/leaflet.css";
+import L from "leaflet";
+import networkData from "./data/network.json";
+import {
+  Explorer,
+  randomInt,
+  weightedRandom,
+  sameLineStreak,
+  lineChangeWeight,
+  nameKey,
+  distanceM,
+  COMPLEX_RADIUS_M,
+  type Network,
+  type RideOption,
+  type Face,
+} from "./network.ts";
+import {
+  loadState,
+  saveState,
+  newTrip,
+  recordVisit,
+  removeVisit,
+  type AppState,
+  type Trip,
+  type Settings,
+} from "./state.ts";
+import { nearbySpots, MAP_SEARCHES, mapSearchUrl, walkingDirectionsUrl, type Spot } from "./explore.ts";
+import { MESSAGES, type Lang, type Messages } from "./i18n.ts";
+
+const explorer = new Explorer(networkData as Network);
+const { stations, lines } = explorer;
+const stationIndex = new Map(stations.map((s, i) => [s.id, i]));
+const lineIndex = new Map(lines.map((l, i) => [l.id, i]));
+
+const state: AppState = loadState((id) => stationIndex.has(id));
+const app = document.querySelector<HTMLElement>("#app")!;
+const mapSection = document.querySelector<HTMLDetailsElement>("#map-section")!;
+const settingsDialog = document.querySelector<HTMLDialogElement>("#settings")!;
+const settingsForm = document.querySelector<HTMLFormElement>("#settings-form")!;
+
+let lang: Lang = state.settings.lang;
+let t: Messages = MESSAGES[lang];
+let rolling = false;
+const spotsCache = new Map<string, Promise<Spot[]>>();
+let complexCache: { areaKm: number | null; groups: number[][] } | null = null;
+/** Wikipedia spots shown per "show more" page. */
+const SPOTS_PAGE = 5;
+/** Placeholder with the same box as a loaded spot, so the page doesn't jump when results arrive. */
+const SKELETON_SPOT = `<div class="spot skeleton"><span class="noimg"></span>
+  <span><span class="sk-line short"></span><span class="sk-line"></span><span class="sk-line"></span></span></div>`;
+
+/**
+ * UI state for the stop you're at: the suggestion picked per spot list, how many spots are
+ * shown, and which collapsible sections the user opened or closed. Survives re-renders
+ * (rolling), resets on arrival.
+ */
+let stop = { key: "", suggestions: {} as Record<string, number>, spotsShown: SPOTS_PAGE, open: {} as Record<string, boolean> };
+/** The map's open state is not station-specific, so it persists across stops. */
+let mapOpen = true;
+
+const AREA_CHOICES = ["8", "12", "20", "35", "60", ""];
+const DIE_CHOICES = [4, 6, 8, 10, 12];
+const MIN_STOPS_CHOICES = [1, 2, 3, 4];
+
+// ---------- helpers ----------
+
+const esc = (text: string) =>
+  text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+
+function stationName(i: number): string {
+  const s = stations[i]!;
+  return lang === "ja" && s.nameJa ? s.nameJa : s.name;
+}
+
+/** The name in the other script, shown as a reading aid. */
+function stationAltName(i: number): string {
+  const s = stations[i]!;
+  return lang === "ja" ? s.name : s.nameJa;
+}
+
+function lineBadge(index: number): string {
+  const line = lines[index]!;
+  const name = lang === "ja" && line.nameJa ? line.nameJa : line.name;
+  const operator = lang === "ja" ? line.operatorJa : line.operator;
+  return `<span class="line-badge" style="--line:${esc(line.color)}"><small>${esc(operator)}</small> ${esc(name)}</span>`;
+}
+
+function directionLabel(option: RideOption): string {
+  const line = lines[option.line]!;
+  if (line.loop) {
+    if (lang === "ja") return option.dir === 1 ? line.ascJa : line.descJa;
+    return option.dir === 1 ? line.asc : line.desc;
+  }
+  return t.towards(stationName(line.stations[option.dir === 1 ? line.stations.length - 1 : 0]!));
+}
+
+function walkLabel(minutes: number): string {
+  return minutes < 0.5 ? t.here : t.walkMin(Math.max(1, Math.round(minutes)));
+}
+
+/** Dice weights carry tenths (2.4×); the UI shows whole numbers, which are easier to read. */
+function shownWeight(weight: number): number {
+  return Math.round(weight);
+}
+
+/** Why a line + direction has no rollable face. */
+function exhaustedLabel(faces: Face[]): string {
+  const visited = faces.some((f) => f.blocked === "visited");
+  const area = faces.some((f) => f.blocked === "area");
+  if (visited && area) return t.exhausted.visitedAndArea;
+  if (visited) return t.exhausted.visited;
+  if (area) return t.exhausted.area;
+  return t.exhausted.end;
+}
+
+function openAttr(section: string, fallback: boolean): string {
+  return (stop.open[section] ?? fallback) ? " open" : "";
+}
+
+// ---------- trip model ----------
+
+interface Choice {
+  option: RideOption;
+  faces: Face[];
+  open: Face[];
+  /** Weight on the train die (1 unless the line-change nudge favours it). */
+  weight: number;
+}
+
+/** Rides in a row on one line, and the resulting line-change weight. */
+interface Streak {
+  count: number;
+  line: number;
+  /** 1 when the nudge is off or the streak is too short. */
+  weight: number;
+}
+
+interface TripView {
+  /** Start plus every destination so far; the last one is where you are. */
+  visited: number[];
+  current: number;
+  choices: Choice[];
+  /** Choices with at least one rollable face. */
+  open: Choice[];
+  rolled: Choice | null;
+  /** Stops-die weight per `rolled.open` face. */
+  faceWeights: number[];
+  /** The stops result; picked automatically when only one face is open. */
+  face: Face | null;
+  streak: Streak;
+}
+
+function tripView(trip: Trip): TripView {
+  const { settings } = state;
+  const visited = [trip.start, ...trip.steps.map((s) => s.path.at(-1)!)].map((id) => stationIndex.get(id)!);
+  const current = visited.at(-1)!;
+  // With the escape hatch on, only the current station area stays off-limits.
+  // "Only new stations" trips also rule out everywhere from earlier trips.
+  const past = trip.onlyNew ? Object.keys(state.history).map((id) => stationIndex.get(id)!) : [];
+  const explored = trip.allowRevisit
+    ? explorer.visitedArea([current], settings.maxWalkMin)
+    : explorer.visitedArea([...new Set([...visited, ...past])], settings.maxWalkMin);
+
+  const count = sameLineStreak(trip.steps.map((s) => s.line));
+  const streak: Streak = {
+    count,
+    line: count ? lineIndex.get(trip.steps.at(-1)!.line)! : -1,
+    weight: settings.lineChangeBoost ? lineChangeWeight(count) : 1,
+  };
+
+  const choices: Choice[] = explorer.options(current, settings.maxWalkMin).map((option) => {
+    const faces = explorer.faces(option, settings, explored);
+    const weight = option.line !== streak.line ? streak.weight : 1;
+    return { option, faces, open: faces.filter((f) => !f.blocked), weight };
+  });
+  const open = choices.filter((c) => c.open.length > 0);
+  // A single option needs no roll, same as a single stops face below.
+  const rolled = open.length === 1 ? open[0]! : (open.find((c) => c.option.key === trip.rolledOption) ?? null);
+  // Staying on the streak line: favour stops where you can change to another line.
+  const faceWeights =
+    rolled?.open.map((f) =>
+      streak.weight > 1 &&
+      rolled.option.line === streak.line &&
+      explorer.hasOtherLine(f.path.at(-1)!, streak.line, settings.maxWalkMin)
+        ? streak.weight
+        : 1,
+    ) ?? [];
+  const face = !rolled
+    ? null
+    : rolled.open.length === 1
+      ? rolled.open[0]!
+      : (rolled.open.find((f) => f.stops === trip.rolledStops) ?? null);
+  return { visited, current, choices, open, rolled, faceWeights, face, streak };
+}
+
+function startTrip(station: number): void {
+  const onlyNew = state.settings.onlyNew && Object.keys(state.history).length > 0;
+  state.trip = newTrip(stations[station]!.id, onlyNew);
+  recordVisit(state.history, state.trip.start, state.trip.startedAt);
+  saveState(state);
+  render();
+  window.scrollTo({ top: 0 });
+}
+
+// ---------- visit history ----------
+
+/** One real-world station in the history: same-named stations close together are one place. */
+interface Place {
+  stations: number[];
+  /** Visit times, oldest first. */
+  visits: string[];
+}
+
+function historyPlaces(): Place[] {
+  const byName = new Map<string, Place[]>();
+  for (const [id, visits] of Object.entries(state.history)) {
+    const station = stationIndex.get(id)!;
+    const key = explorer.keys[station]!;
+    const sameName = byName.get(key) ?? [];
+    let place = sameName.find((p) => distanceM(stations[p.stations[0]!]!, stations[station]!) <= COMPLEX_RADIUS_M);
+    if (!place) {
+      place = { stations: [], visits: [] };
+      sameName.push(place);
+      byName.set(key, sameName);
+    }
+    place.stations.push(station);
+    place.visits.push(...visits);
+  }
+  const places = [...byName.values()].flat();
+  for (const place of places) place.visits.sort();
+  return places.sort((a, b) => b.visits.at(-1)!.localeCompare(a.visits.at(-1)!));
+}
+
+function formatDate(iso: string): string {
+  return new Intl.DateTimeFormat(lang === "ja" ? "ja-JP" : "en-US", { dateStyle: "medium" }).format(new Date(iso));
+}
+
+function historyHtml(places: Place[]): string {
+  const visits = places.reduce((sum, p) => sum + p.visits.length, 0);
+  const rows = places
+    .map(
+      (p) => `<li><strong>${esc(stationName(p.stations[0]!))}</strong> <span class="ja">${esc(stationAltName(p.stations[0]!))}</span>
+        <small class="muted">${t.historyRow(p.visits.length, formatDate(p.visits.at(-1)!))}</small></li>`,
+    )
+    .join("");
+  return `
+    <details class="card collapsible">
+      <summary><h3>${t.history}</h3></summary>
+      <p class="muted">${t.historySummary(places.length, visits)}</p>
+      <ol class="history">${rows}</ol>
+      <button data-action="clear-history">${t.clearHistory}</button>
+    </details>`;
+}
+
+/** "New station" or "been here N× before" for where you are now. */
+function visitNote(trip: Trip, current: number): string {
+  const arrivedAt = trip.steps.at(-1)?.at ?? trip.startedAt;
+  const here = stations[current]!;
+  const place = historyPlaces().find((p) =>
+    p.stations.some((s) => explorer.keys[s] === explorer.keys[current] && distanceM(stations[s]!, here) <= COMPLEX_RADIUS_M),
+  );
+  const before = place?.visits.filter((v) => v < arrivedAt) ?? [];
+  return before.length ? t.visitedBefore(before.length, formatDate(before.at(-1)!)) : t.firstVisit;
+}
+
+// ---------- start screen ----------
+
+function complexes(): number[][] {
+  if (complexCache?.areaKm !== state.settings.areaKm) {
+    complexCache = { areaKm: state.settings.areaKm, groups: explorer.complexes(state.settings.areaKm) };
+  }
+  return complexCache.groups;
+}
+
+function renderStart(): void {
+  const places = historyPlaces();
+  app.innerHTML = `
+    <section class="card intro">
+      <h2>${t.introTitle}</h2>
+      <ol>${t.introSteps.map((step) => `<li>${step}</li>`).join("")}</ol>
+    </section>
+    <section class="card">
+      ${places.length
+        ? `<label class="check">
+             <input type="checkbox" id="only-new"${state.settings.onlyNew ? " checked" : ""}>
+             <span>${t.onlyNew}<br><small class="muted">${t.onlyNewHint(places.length)}</small></span>
+           </label>`
+        : ""}
+      <label class="field">${t.startStation}
+        <input id="station-search" type="search" placeholder="${esc(t.searchPlaceholder)}" autocomplete="off">
+      </label>
+      <div class="row">
+        <button data-action="nearest">${t.nearest}</button>
+        <button data-action="random-start">${t.surprise}</button>
+      </div>
+      <ul id="results" class="results"></ul>
+    </section>
+    ${places.length ? historyHtml(places) : ""}`;
+  const input = app.querySelector<HTMLInputElement>("#station-search")!;
+  input.addEventListener("input", () => renderResults(input.value));
+  app.querySelector<HTMLInputElement>("#only-new")?.addEventListener("change", (event) => {
+    state.settings.onlyNew = (event.target as HTMLInputElement).checked;
+    saveState(state);
+  });
+}
+
+function renderResults(query: string): void {
+  const results = app.querySelector<HTMLElement>("#results")!;
+  const key = nameKey(query);
+  const raw = query.trim();
+  if (!key && !raw) {
+    results.innerHTML = "";
+    return;
+  }
+  const matches = complexes()
+    .map((group) => {
+      const station = stations[group[0]!]!;
+      const k = explorer.keys[group[0]!]!;
+      const rank = key && k.startsWith(key) ? 0 : key && k.includes(key) ? 1 : station.nameJa.includes(raw) ? 2 : -1;
+      return { group, station, rank };
+    })
+    .filter((m) => m.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || a.station.name.length - b.station.name.length)
+    .slice(0, 15);
+  results.innerHTML = matches.length
+    ? matches
+        .map(({ group }) => {
+          const lineDots = [...new Set(group.map((i) => stations[i]!.line))]
+            .map((l) => `<span class="dot" style="--line:${esc(lines[l]!.color)}"></span>`)
+            .join("");
+          return `<li><button data-action="start" data-station="${group[0]}">
+            <span><strong>${esc(stationName(group[0]!))}</strong> <span class="ja">${esc(stationAltName(group[0]!))}</span></span>
+            <span class="dots">${lineDots}</span></button></li>`;
+        })
+        .join("")
+    : `<li class="muted">${t.noStationFound}</li>`;
+}
+
+// ---------- trip screen ----------
+
+function renderTrip(trip: Trip): void {
+  const view = tripView(trip);
+  const stopKey = `${trip.startedAt}:${trip.steps.length}`;
+  if (stop.key !== stopKey) stop = { key: stopKey, suggestions: {}, spotsShown: SPOTS_PAGE, open: {} };
+  const stopNumber = trip.steps.length;
+
+  app.innerHTML = `
+    <section class="card here">
+      <div class="eyebrow">${stopNumber ? t.stopNumber(stopNumber) : t.start} · ${t.explored(view.visited.length)}</div>
+      <h2>${esc(stationName(view.current))} <span class="ja">${esc(stationAltName(view.current))}</span></h2>
+      <div class="visit-note">${visitNote(trip, view.current)}</div>
+    </section>
+    ${exploreHtml(view, stopNumber === 0)}
+    <div id="map-slot"></div>
+    ${lineRollHtml(trip, view)}
+    ${view.rolled ? stopsRollHtml(view, view.rolled, view.face) : ""}
+    ${view.rolled && view.face ? goHtml(view.rolled, view.face) : ""}
+    ${journeyHtml(trip)}`;
+
+  app.querySelector("#map-slot")!.replaceWith(mapSection);
+  mapSection.hidden = false;
+  mapSection.open = mapOpen;
+  loadSpots(view.current);
+  updateMap(trip, view);
+}
+
+function exploreHtml(view: TripView, atStart: boolean): string {
+  const here = stations[view.current]!;
+  return `
+    <details class="card collapsible explore" data-section="explore"${openAttr("explore", !atStart)}>
+      <summary><h3>${esc(t.explore(stationName(view.current)))}</h3></summary>
+      <div id="suggestion">
+        <div class="suggestion" aria-busy="true">
+          <div class="suggestion-head"><strong>${t.suggestion}</strong><span class="spinner" aria-label="${esc(t.loadingSpots)}"></span></div>
+          ${SKELETON_SPOT}
+          <span class="chip skeleton-chip">${t.loadingSpots}</span>
+        </div>
+      </div>
+      <div class="chips">${MAP_SEARCHES.map(
+        (s) => `<a class="chip" target="_blank" rel="noopener" href="${esc(mapSearchUrl(s.query, here))}">${s[lang]}</a>`,
+      ).join("")}</div>
+      <h4 class="spots-head">${t.nearbyWiki}</h4>
+      <div id="spots" class="spots" aria-busy="true">${SKELETON_SPOT.repeat(SPOTS_PAGE)}</div>
+    </details>`;
+}
+
+function optionCard(choice: Choice, face: number, extraClass = ""): string {
+  const { option } = choice;
+  const next = explorer.ride(option, 1)![0]!;
+  return `<div class="option ${extraClass}">
+    <span class="num">${face}</span>
+    <span class="body">${lineBadge(option.line)}${choice.weight > 1 ? ` <span class="boost">×${shownWeight(choice.weight)}</span>` : ""}<br>
+      ${esc(directionLabel(option))} · ${t.next(esc(stationName(next)))}
+      ${option.walkMin >= 0.5 ? `<br><small class="muted">${esc(t.from(stationName(option.board)))}</small>` : ""}</span>
+    <span class="walk">${walkLabel(option.walkMin)}</span>
+  </div>`;
+}
+
+function lineRollHtml(trip: Trip, view: TripView): string {
+  const total = view.open.length;
+  const rolledIndex = view.rolled ? view.open.indexOf(view.rolled) : -1;
+  const slot = view.rolled
+    ? optionCard(view.rolled, rolledIndex + 1, "chosen")
+    : `<div class="option placeholder"><span class="num">?</span><span class="body">${t.rollPrompt(total)}</span></div>`;
+
+  const items = view.open
+    .map((choice, i) => `<li>${optionCard(choice, i + 1, i === rolledIndex ? "chosen" : "")}</li>`)
+    .join("");
+  const blockedItems = view.choices
+    .filter((c) => c.open.length === 0)
+    .map(
+      ({ option, faces }) => `<li><div class="option blocked">
+        <span class="num">✕</span>
+        <span class="body">${lineBadge(option.line)}<br>${esc(directionLabel(option))}</span>
+        <span class="walk">${exhaustedLabel(faces)}</span>
+      </div></li>`,
+    )
+    .join("");
+
+  let stuck = "";
+  if (total === 0) {
+    const revisitHelps = view.choices.some((c) => c.faces.some((f) => f.blocked === "visited"));
+    stuck = revisitHelps
+      ? `<p class="notice">${t.stuckRevisit} <button data-action="allow-revisit">${t.allowRevisit}</button></p>`
+      : `<p class="notice">${t.stuckSettings}</p>`;
+  }
+
+  return `
+    <section class="card">
+      <h3><span class="step">1</span> ${t.whichTrain}</h3>
+      <p class="muted">${total ? t.rollSummary(total, state.settings.maxWalkMin) : t.noOptions}${trip.onlyNew ? t.onlyNewActive : ""}${trip.allowRevisit ? t.revisitsAllowed : ""}</p>
+      ${total ? `<div id="line-slot" class="roll-slot">${slot}</div>` : ""}
+      ${stuck}
+      ${total > 1 && view.open.some((c) => c.weight > 1)
+        ? `<p class="boost-note">${t.boostTrains(view.streak.count, lineBadge(view.streak.line), shownWeight(view.streak.weight))}</p>`
+        : ""}
+      ${total === 1 ? `<p class="muted small">${t.onlyOneTrain}</p>` : ""}
+      ${total > 1 && (!view.rolled || state.settings.allowRerolls)
+        ? `<button class="primary" data-action="roll-line">${view.rolled ? t.rerollTrain : t.rollTrain}</button>`
+        : ""}
+      ${view.choices.length
+        ? `<details class="all-options" data-section="lines"${openAttr("lines", false)}>
+             <summary>${t.showAll(view.choices.length)}</summary>
+             <ol class="options">${items}${blockedItems}</ol>
+           </details>`
+        : ""}
+    </section>`;
+}
+
+/** The stops result: the count, big, and where it takes you. */
+function stopCard(face: Face, extraClass = ""): string {
+  const dest = face.path.at(-1)!;
+  return `<div class="option stop-card ${extraClass}">
+    <span class="num">${face.stops}</span>
+    <span class="body"><strong>${esc(stationName(dest))}</strong> <span class="ja">${esc(stationAltName(dest))}</span><br>
+      <small class="muted">${t.stops(face.stops)}</small></span>
+  </div>`;
+}
+
+function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): string {
+  const weightByStops = new Map(choice.open.map((f, i) => [f.stops, view.faceWeights[i]!]));
+  const faces = choice.faces
+    .map((f) => {
+      const weight = weightByStops.get(f.stops) ?? 1;
+      const cls = [f.blocked ? `blocked ${f.blocked}` : "open", face?.stops === f.stops ? "chosen" : "", weight > 1 ? "boosted" : ""];
+      const dest = f.path.length ? stationName(f.path.at(-1)!) : "";
+      const title = f.blocked ? `${dest ? `${dest}: ` : ""}${t.blocked[f.blocked]}` : dest;
+      const boost = weight > 1 ? ` data-boost="×${shownWeight(weight)}"` : "";
+      return `<div class="face ${cls.join(" ")}" title="${esc(title)}"${boost}>${f.stops}</div>`;
+    })
+    .join("");
+  const single = choice.open.length === 1;
+  const boosted = !single && view.faceWeights.some((w) => w > 1);
+  const hasShort = choice.faces.some((f) => f.blocked === "short");
+  const slot = face
+    ? stopCard(face, "chosen")
+    : `<div class="option placeholder"><span class="num">?</span><span class="body">${t.stopsPrompt(choice.open.length)}</span></div>`;
+  return `
+    <section class="card" id="step-stops">
+      <h3><span class="step">2</span> ${t.howFar}</h3>
+      <p>${lineBadge(choice.option.line)} ${esc(directionLabel(choice.option))}</p>
+      <div id="stops-slot" class="roll-slot">${slot}</div>
+      ${boosted ? `<p class="boost-note">${t.boostStops(view.streak.count, lineBadge(view.streak.line), shownWeight(view.streak.weight))}</p>` : ""}
+      <div class="dice">${faces}</div>
+      <p class="muted small legend">
+        ${single ? t.onlyOneFace : `<span class="face mini blocked visited">✕</span> ${t.legendBlocked}`}
+        ${hasShort && !single ? `<span class="face mini blocked short">·</span> ${t.legendShort}` : ""}
+        ${boosted ? `<span class="face mini boosted-mini">×</span> ${t.legendBoost(shownWeight(view.streak.weight))}` : ""}
+      </p>
+      ${single || (face && !state.settings.allowRerolls)
+        ? ""
+        : `<button class="primary" data-action="roll-stops">${face ? t.rerollStops : t.rollStops}</button>`}
+    </section>`;
+}
+
+function goHtml(choice: Choice, face: Face): string {
+  const { option } = choice;
+  const stops = face.path
+    .map(
+      (i, n) =>
+        `<li class="${n === face.path.length - 1 ? "dest" : ""}">${esc(stationName(i))} <span class="ja">${esc(stationAltName(i))}</span></li>`,
+    )
+    .join("");
+  return `
+    <section class="card go" id="step-go">
+      <h3><span class="step">3</span> ${t.go}</h3>
+      <p>${t.goSentence({
+        walkMin: option.walkMin >= 0.5 ? Math.max(1, Math.round(option.walkMin)) : null,
+        board: esc(stationName(option.board)),
+        badge: lineBadge(option.line),
+        direction: esc(directionLabel(option)),
+        stops: face.stops,
+      })}</p>
+      <ol class="stops">${stops}</ol>
+      <button class="primary big" data-action="arrive">${esc(t.gotOff(stationName(face.path.at(-1)!)))}</button>
+    </section>`;
+}
+
+function journeyHtml(trip: Trip): string {
+  const timeFormat = new Intl.DateTimeFormat(lang === "ja" ? "ja-JP" : "en-US", { hour: "2-digit", minute: "2-digit" });
+  const steps = trip.steps
+    .map((step) => {
+      const dest = stationIndex.get(step.path.at(-1)!)!;
+      return `<li>${lineBadge(lineIndex.get(step.line)!)} ${t.stops(step.stops)} → <strong>${esc(stationName(dest))}</strong>
+        <small class="muted">${timeFormat.format(new Date(step.at))}</small></li>`;
+    })
+    .join("");
+  return `
+    <section class="card">
+      <h3>${t.journey}</h3>
+      <ol class="journey"><li>${t.journeyStart} <strong>${esc(stationName(stationIndex.get(trip.start)!))}</strong></li>${steps}</ol>
+      <div class="row">
+        ${trip.steps.length ? `<button data-action="undo">${t.undo}</button>` : ""}
+        <button data-action="end-trip">${t.endTrip}</button>
+      </div>
+    </section>`;
+}
+
+function spotHtml(s: Spot): string {
+  return `<a class="spot" href="${esc(s.url)}" target="_blank" rel="noopener">
+    ${s.thumbnail ? `<img src="${esc(s.thumbnail)}" alt="" loading="lazy">` : `<span class="noimg">📍</span>`}
+    <span><span class="title-line"><strong>${esc(s.title)}</strong> <small class="muted">${Math.round(s.distanceM / 50) * 50} m</small></span>
+    <small class="snippet">${esc(s.description || s.extract)}</small></span></a>`;
+}
+
+/**
+ * A random place to head for: one of the nearby articles, or a map search when
+ * Wikipedia has nothing (or is unreachable).
+ */
+function suggestionHtml(key: string, station: number, spots: Spot[]): string {
+  const count = spots.length || MAP_SEARCHES.length;
+  const index = (stop.suggestions[key] ??= randomInt(count));
+  const another =
+    count > 1 ? `<button class="icon" data-action="new-suggestion" title="${esc(t.anotherSuggestion)}">↻</button>` : "";
+  const here = stations[station]!;
+  const spot = spots[index];
+  if (!spot) {
+    const search = MAP_SEARCHES[index]!;
+    return `<div class="suggestion"><div class="suggestion-head"><strong>${t.suggestSearch}</strong>${another}</div>
+      <a class="chip" target="_blank" rel="noopener" href="${esc(mapSearchUrl(search.query, here))}">${search[lang]}</a></div>`;
+  }
+  return `<div class="suggestion"><div class="suggestion-head"><strong>${t.suggestion}</strong>${another}</div>
+    ${spotHtml(spot)}
+    <a class="chip" target="_blank" rel="noopener" href="${esc(walkingDirectionsUrl(here, spot.at))}">${t.directions}</a></div>`;
+}
+
+function loadSpots(station: number): void {
+  const key = `${lang}:${station}`;
+  let promise = spotsCache.get(key);
+  if (!promise) {
+    promise = nearbySpots(stations[station]!, lang);
+    spotsCache.set(key, promise);
+    promise.catch(() => spotsCache.delete(key));
+  }
+  const container = app.querySelector<HTMLElement>("#spots")!;
+  const suggestion = app.querySelector<HTMLElement>("#suggestion")!;
+  container.dataset.key = key;
+  // Stale if the user moved on (or switched language) before Wikipedia answered.
+  const stale = () => container.dataset.key !== key || !container.isConnected;
+  promise.then(
+    (spots) => {
+      if (stale()) return;
+      suggestion.innerHTML = suggestionHtml(key, station, spots);
+      container.removeAttribute("aria-busy");
+      const remaining = spots.length - stop.spotsShown;
+      container.innerHTML = spots.length
+        ? spots.slice(0, stop.spotsShown).map(spotHtml).join("") +
+          (remaining > 0 ? `<button data-action="more-spots">${t.showMoreSpots(Math.min(SPOTS_PAGE, remaining))}</button>` : "")
+        : `<p class="muted">${t.noSpots}</p>`;
+    },
+    () => {
+      if (stale()) return;
+      suggestion.innerHTML = suggestionHtml(key, station, []);
+      container.removeAttribute("aria-busy");
+      container.innerHTML = `<p class="muted">${t.wikiError}</p>`;
+    },
+  );
+}
+
+// ---------- map ----------
+
+let map: L.Map | null = null;
+let mapLayer: L.LayerGroup | null = null;
+/** Framing for the current route; applied once per route change, and only while the map is visible. */
+let framing: { key: string; bounds: L.LatLngBounds | null; center: L.LatLngTuple } | null = null;
+let framedKey = "";
+
+function frameMap(): void {
+  if (!map || !framing || !mapSection.open || framing.key === framedKey) return;
+  map.invalidateSize();
+  framedKey = framing.key;
+  if (framing.bounds) map.fitBounds(framing.bounds, { padding: [30, 30], maxZoom: 15 });
+  else map.setView(framing.center, 14);
+}
+
+function updateMap(trip: Trip, view: TripView): void {
+  const latlng = (i: number): L.LatLngTuple => [stations[i]!.lat, stations[i]!.lng];
+  if (!map) {
+    map = L.map("map").setView(latlng(view.current), 14);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+    mapLayer = L.layerGroup().addTo(map);
+  }
+  map.invalidateSize();
+  mapLayer!.clearLayers();
+  const points: L.LatLngTuple[] = [];
+
+  let previous = stationIndex.get(trip.start)!;
+  for (const step of trip.steps) {
+    const board = stationIndex.get(step.board)!;
+    const path = step.path.map((id) => stationIndex.get(id)!);
+    const color = lines[lineIndex.get(step.line)!]!.color;
+    if (board !== previous) L.polyline([latlng(previous), latlng(board)], { color: "#666", dashArray: "2 6", weight: 3 }).addTo(mapLayer!);
+    const coords = [board, ...path].map(latlng);
+    L.polyline(coords, { color, weight: 6, opacity: 0.9 }).addTo(mapLayer!);
+    points.push(...coords);
+    previous = path.at(-1)!;
+  }
+  if (view.rolled && view.face) {
+    const coords = [view.rolled.option.board, ...view.face.path].map(latlng);
+    L.polyline(coords, { color: lines[view.rolled.option.line]!.color, weight: 5, dashArray: "8 8", opacity: 0.8 }).addTo(mapLayer!);
+    points.push(...coords);
+  }
+  for (const v of view.visited) {
+    L.circleMarker(latlng(v), { radius: 6, color: "#222", weight: 2, fillColor: "#fff", fillOpacity: 1 })
+      .bindTooltip(stationName(v))
+      .addTo(mapLayer!);
+    points.push(latlng(v));
+  }
+  L.circleMarker(latlng(view.current), { radius: 10, color: "#fff", weight: 3, fillColor: "#e60033", fillOpacity: 1 })
+    .bindTooltip(t.youAreHere(stationName(view.current)))
+    .addTo(mapLayer!);
+
+  // Re-frame only when the route changes, so manual panning sticks between renders.
+  framing = {
+    key: `${trip.startedAt}:${trip.steps.length}:${view.face ? view.rolled!.option.key + view.face.stops : ""}`,
+    bounds: points.length > 1 ? L.latLngBounds(points) : null,
+    center: latlng(view.current),
+  };
+  frameMap();
+}
+
+// ---------- dice animation ----------
+
+/** Flicker through `count` candidates via `show`, decelerating onto `final`. */
+async function spin(count: number, final: number, show: (i: number) => void): Promise<void> {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches || count < 2) return;
+  const steps = 14 + count;
+  for (let k = 0; k <= steps; k++) {
+    show((((final - steps + k) % count) + count) % count);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 45 + 260 * (k / steps) ** 3);
+    await promise;
+  }
+}
+
+// ---------- actions ----------
+
+async function handleAction(action: string, target: HTMLElement): Promise<void> {
+  const trip = state.trip;
+  switch (action) {
+    case "start":
+      startTrip(Number(target.dataset.station));
+      return;
+    case "clear-history":
+      if (!confirm(t.confirmClearHistory)) return;
+      state.history = {};
+      saveState(state);
+      render();
+      return;
+    case "random-start": {
+      const groups = complexes();
+      startTrip(groups[randomInt(groups.length)]![0]!);
+      return;
+    }
+    case "nearest":
+      if (!navigator.geolocation) return alert(t.locationUnavailable);
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => {
+          const me = { lat: coords.latitude, lng: coords.longitude };
+          let best = -1;
+          let bestDistance = Infinity;
+          stations.forEach((s, i) => {
+            const d = distanceM(me, s);
+            if (d < bestDistance && explorer.inArea(i, state.settings.areaKm)) [best, bestDistance] = [i, d];
+          });
+          if (best >= 0) startTrip(best);
+        },
+        (error) => alert(t.locationError(error.message)),
+        { enableHighAccuracy: true, timeout: 10_000 },
+      );
+      return;
+  }
+
+  if (!trip) return;
+  let reveal: string | null = null;
+  switch (action) {
+    case "roll-line": {
+      const view = tripView(trip);
+      if (!view.open.length || (view.rolled && !state.settings.allowRerolls)) return;
+      const pick = weightedRandom(view.open.map((c) => c.weight));
+      const slot = app.querySelector<HTMLElement>("#line-slot")!;
+      const cards = view.open.map((choice, i) => optionCard(choice, i + 1, "spinning"));
+      await spin(cards.length, pick, (i) => (slot.innerHTML = cards[i]!));
+      trip.rolledOption = view.open[pick]!.option.key;
+      trip.rolledStops = null;
+      reveal = view.open[pick]!.open.length === 1 ? "#step-go" : "#step-stops";
+      break;
+    }
+    case "roll-stops": {
+      const { rolled, face, faceWeights } = tripView(trip);
+      if (!rolled || (face && !state.settings.allowRerolls)) return;
+      const pick = weightedRandom(faceWeights);
+      const slot = app.querySelector<HTMLElement>("#stops-slot")!;
+      const faces = [...app.querySelectorAll<HTMLElement>(".face.open")];
+      const cards = rolled.open.map((f) => stopCard(f, "spinning"));
+      await spin(cards.length, pick, (i) => {
+        slot.innerHTML = cards[i]!;
+        faces.forEach((el, j) => el.classList.toggle("spinning", i === j));
+      });
+      trip.rolledStops = rolled.open[pick]!.stops;
+      reveal = "#step-go";
+      break;
+    }
+    case "arrive": {
+      const { rolled, face } = tripView(trip);
+      if (!rolled || !face) return;
+      const at = new Date().toISOString();
+      const path = face.path.map((i) => stations[i]!.id);
+      trip.steps.push({
+        line: lines[rolled.option.line]!.id,
+        board: stations[rolled.option.board]!.id,
+        stops: face.stops,
+        path,
+        at,
+      });
+      recordVisit(state.history, path.at(-1)!, at);
+      trip.rolledOption = null;
+      trip.rolledStops = null;
+      trip.allowRevisit = false;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      break;
+    }
+    case "allow-revisit":
+      trip.allowRevisit = true;
+      break;
+    case "undo": {
+      if (!confirm(t.confirmUndo)) return;
+      const undone = trip.steps.pop();
+      if (undone) removeVisit(state.history, undone.path.at(-1)!, undone.at);
+      trip.rolledOption = null;
+      trip.rolledStops = null;
+      break;
+    }
+    case "end-trip":
+      if (!confirm(t.confirmEnd)) return;
+      state.trip = null;
+      break;
+    case "more-spots":
+      // Reveal in place; a full re-render would flash the list back to "loading".
+      stop.spotsShown += SPOTS_PAGE;
+      loadSpots(tripView(trip).current);
+      return;
+    case "new-suggestion": {
+      const current = tripView(trip).current;
+      const key = `${lang}:${current}`;
+      const spots = (await spotsCache.get(key)?.catch(() => [])) ?? [];
+      const count = spots.length || MAP_SEARCHES.length;
+      // Shift by 1..count-1 so the new pick always differs.
+      if (count > 1) stop.suggestions[key] = ((stop.suggestions[key] ?? 0) + 1 + randomInt(count - 1)) % count;
+      loadSpots(current);
+      return;
+    }
+    default:
+      return;
+  }
+  saveState(state);
+  render();
+  if (reveal) document.querySelector(reveal)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+app.addEventListener("click", async (event) => {
+  const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action]");
+  if (!target || rolling) return;
+  rolling = true;
+  app.classList.add("rolling");
+  try {
+    await handleAction(target.dataset.action!, target);
+  } finally {
+    rolling = false;
+    app.classList.remove("rolling");
+  }
+});
+
+// `toggle` doesn't bubble; capture it to remember what the user opened or closed.
+document.addEventListener(
+  "toggle",
+  (event) => {
+    const details = event.target as HTMLDetailsElement;
+    const section = details.dataset.section;
+    if (!section) return;
+    if (section === "map") {
+      mapOpen = details.open;
+      frameMap();
+    } else {
+      stop.open[section] = details.open;
+    }
+  },
+  true,
+);
+
+// ---------- language ----------
+
+function applyChrome(): void {
+  document.documentElement.lang = lang;
+  document.title = t.appTitle;
+  document.querySelector("#app-title")!.textContent = t.appTitle;
+  document.querySelector("#map-title")!.textContent = t.map;
+  document.querySelector("#footer")!.innerHTML = t.footer;
+  const settingsButton = document.querySelector<HTMLElement>("#settings-button")!;
+  settingsButton.title = t.settings;
+  settingsButton.setAttribute("aria-label", t.settings);
+  for (const button of document.querySelectorAll<HTMLElement>("#lang-toggle button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
+  }
+}
+
+document.querySelector("#lang-toggle")!.addEventListener("click", (event) => {
+  const choice = (event.target as HTMLElement).closest<HTMLElement>("[data-lang]")?.dataset.lang;
+  if (rolling || (choice !== "en" && choice !== "ja") || choice === lang) return;
+  lang = state.settings.lang = choice;
+  t = MESSAGES[lang];
+  saveState(state);
+  applyChrome();
+  render();
+});
+
+// ---------- settings ----------
+
+document.querySelector("#settings-button")!.addEventListener("click", () => {
+  const s = state.settings;
+  const area = s.areaKm === null ? "" : String(s.areaKm);
+  settingsForm.innerHTML = `
+    <h2>${t.settingsTitle}</h2>
+    <label class="field">
+      <span>${t.walkLimit} <output>${s.maxWalkMin}</output> ${t.minutes}</span>
+      <input type="range" name="maxWalkMin" min="0" max="10" step="1" value="${s.maxWalkMin}">
+    </label>
+    <label class="field">${t.area}
+      <select name="areaKm">${AREA_CHOICES.map(
+        (value) => `<option value="${value}"${value === area ? " selected" : ""}>${t.areaOptions[value]}</option>`,
+      ).join("")}</select>
+    </label>
+    <label class="field">${t.stopsDie}
+      <select name="dieSides">${DIE_CHOICES.map(
+        (n) => `<option value="${n}"${n === s.dieSides ? " selected" : ""}>${t.dieOption(n)}</option>`,
+      ).join("")}</select>
+    </label>
+    <label class="field">${t.minStops}
+      <select name="minStops">${MIN_STOPS_CHOICES.map(
+        (n) => `<option value="${n}"${n === s.minStops ? " selected" : ""}>${t.minStopsOption(n)}</option>`,
+      ).join("")}</select>
+      <small class="muted">${t.minStopsHint}</small>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="allowRerolls"${s.allowRerolls ? " checked" : ""}>
+      <span>${t.allowRerolls}<br><small class="muted">${t.allowRerollsHint}</small></span>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="lineChangeBoost"${s.lineChangeBoost ? " checked" : ""}>
+      <span>${t.lineChangeBoost}<br><small class="muted">${t.lineChangeBoostHint}</small></span>
+    </label>
+    <p class="muted small">${t.settingsNote}</p>
+    <menu>
+      <button value="cancel" formnovalidate>${t.cancel}</button>
+      <button value="save" class="primary">${t.save}</button>
+    </menu>`;
+  settingsDialog.showModal();
+});
+
+settingsForm.addEventListener("input", () => {
+  const walk = settingsForm.elements.namedItem("maxWalkMin") as HTMLInputElement;
+  settingsForm.querySelector("output")!.textContent = walk.value;
+});
+
+settingsDialog.addEventListener("close", () => {
+  if (settingsDialog.returnValue !== "save") return;
+  const data = new FormData(settingsForm);
+  const area = String(data.get("areaKm"));
+  const updated: Settings = {
+    ...state.settings,
+    maxWalkMin: Number(data.get("maxWalkMin")),
+    areaKm: area ? Number(area) : null,
+    dieSides: Number(data.get("dieSides")),
+    minStops: Number(data.get("minStops")),
+    allowRerolls: data.get("allowRerolls") === "on",
+    lineChangeBoost: data.get("lineChangeBoost") === "on",
+  };
+  // Pending rolls were made under the old rules; toggling re-rolls alone must not reset them.
+  const rulesChanged = (["maxWalkMin", "areaKm", "dieSides", "minStops"] as const).some(
+    (k) => updated[k] !== state.settings[k],
+  );
+  state.settings = updated;
+  if (state.trip && rulesChanged) {
+    state.trip.rolledOption = null;
+    state.trip.rolledStops = null;
+  }
+  saveState(state);
+  render();
+});
+
+function render(): void {
+  if (state.trip) renderTrip(state.trip);
+  else renderStart();
+}
+
+applyChrome();
+render();

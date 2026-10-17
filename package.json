@@ -1,0 +1,20 @@
+{
+  "name": "tokyo-random-train",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun ./index.html",
+    "build": "bun build ./index.html --outdir dist --minify",
+    "data": "bun scripts/build-data.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/leaflet": "^1.9.22",
+    "typescript": "^5.9.3"
+  }
+}

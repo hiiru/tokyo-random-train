@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#e60033">
+    <title>Tokyo Random Train</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎲</text></svg>">
+    <link rel="stylesheet" href="./src/style.css">
+  </head>
+  <body>
+    <!-- Text is filled in by src/main.ts in the selected language. -->
+    <header class="top">
+      <h1>🎲 <span id="app-title"></span></h1>
+      <div class="toggle" id="lang-toggle">
+        <button data-lang="en">EN</button>
+        <button data-lang="ja">日本語</button>
+      </div>
+      <button id="settings-button" class="icon">⚙️</button>
+    </header>
+
+    <main id="app"></main>
+
+    <!-- Moved into the trip view on render; kept outside #app so Leaflet's DOM survives re-renders. -->
+    <details id="map-section" class="card collapsible map-card" data-section="map" hidden>
+      <summary><h3 id="map-title"></h3></summary>
+      <div id="map"></div>
+    </details>
+
+    <footer id="footer"></footer>
+
+    <dialog id="settings">
+      <form id="settings-form" method="dialog"></form>
+    </dialog>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
