@@ -200,6 +200,12 @@ export const KEEP_DIRECTION_WEIGHT = 1.5;
 export const REVERSE_DIRECTION_WEIGHT = 0.5;
 /** Stops-die weight for landing on a station you've already ridden through on this trip. */
 export const RIDDEN_THROUGH_WEIGHT = 0.5;
+/**
+ * Hubs explored earlier on this trip come back as rare destinations (stops-die weight 0.1)
+ * once they weren't among the last few stations you landed on.
+ */
+export const HUB_RETURN_WEIGHT = 0.1;
+export const HUB_RETURN_AFTER_STOPS = 4;
 
 /** Platform pair → hand-estimated minutes; see src/data/transfers.ts. */
 export interface TransferCorrection {

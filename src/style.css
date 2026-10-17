@@ -447,3 +447,6 @@ a.button {
 }
 a.button:hover { border-color: var(--muted); }
 .route-hint { display: block; text-align: center; margin-top: 4px; }
+/* Hubs from earlier on this trip, back as rare destinations */
+.face.hub-return { border-style: double; border-width: 3px; color: var(--muted); }
+.face.mini.hub-return { border-width: 3px; }

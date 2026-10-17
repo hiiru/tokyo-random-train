@@ -12,6 +12,8 @@ import {
   KEEP_DIRECTION_WEIGHT,
   REVERSE_DIRECTION_WEIGHT,
   RIDDEN_THROUGH_WEIGHT,
+  HUB_RETURN_WEIGHT,
+  HUB_RETURN_AFTER_STOPS,
   nameKey,
   distanceM,
   walkMinutes,
@@ -140,6 +142,8 @@ interface Choice {
   visitedOnLine: number;
   /** Direction momentum: >1 keeps the last ride's direction, <1 turns back, 1 otherwise. */
   direction: number;
+  /** HUB_RETURN_WEIGHT when the only open stops are hubs coming back, else 1. */
+  hubReturn: number;
 }
 
 /** Rides in a row on one line, and the resulting line-change weight. */
@@ -170,6 +174,8 @@ interface TripView {
   explored: Set<number>;
   /** Hubs from earlier trips that "only new stations" lets you land on again. */
   hubRevisits: Set<number>;
+  /** Hubs explored earlier on this trip, open again as rare destinations. */
+  hubReturns: Set<number>;
   /** Explored on this trip (a subset of `explored`; the rest comes from earlier trips). */
   tripExplored: Set<number>;
   streak: Streak;
@@ -192,11 +198,22 @@ function tripView(trip: Trip): TripView {
     ? explorer.visitedArea([current], settings.maxWalkMin)
     : explorer.visitedArea(visited, settings.maxWalkMin);
   const tripExplored = new Set(explored);
+  // Hubs explored earlier on this trip come back as rare destinations, unless among the last few stops.
+  const hubReturns = new Set<number>();
+  if (!trip.allowRevisit) {
+    const recent = explorer.visitedArea(visited.slice(-HUB_RETURN_AFTER_STOPS), settings.maxWalkMin);
+    for (const s of tripExplored) {
+      if (!recent.has(s) && explorer.isHub(s, settings.maxWalkMin)) {
+        hubReturns.add(s);
+        explored.delete(s);
+      }
+    }
+  }
   const hubRevisits = new Set<number>();
   if (trip.onlyNew && !trip.allowRevisit) {
     const past = Object.keys(state.history).map((id) => stationIndex.get(id)!);
     for (const s of explorer.visitedArea(past, settings.maxWalkMin)) {
-      if (explored.has(s)) continue;
+      if (explored.has(s) || hubReturns.has(s)) continue;
       if (explorer.isHub(s, settings.maxWalkMin)) hubRevisits.add(s);
       else explored.add(s);
     }
@@ -234,16 +251,29 @@ function tripView(trip: Trip): TripView {
     }
   }
 
-  const choices: Choice[] = explorer.options(current, settings.maxWalkMin).map((option) => {
-    const faces = explorer.faces(option, settings, explored);
-    const boost = option.line !== streak.line ? streak.weight : 1;
-    const visitedOnLine = visitedPerLine.get(option.line) ?? 0;
-    const fatigue = settings.preferFreshLines ? lineFatigue(visitedOnLine) : 1;
-    const direction =
-      momentum?.line === option.line ? (momentum.dir === option.dir ? KEEP_DIRECTION_WEIGHT : REVERSE_DIRECTION_WEIGHT) : 1;
-    const weight = boost * fatigue * direction;
-    return { option, faces, open: faces.filter((f) => !f.blocked), weight, boost, fatigue, visitedOnLine, direction };
-  });
+  const buildChoices = (): Choice[] =>
+    explorer.options(current, settings.maxWalkMin).map((option) => {
+      const faces = explorer.faces(option, settings, explored);
+      const boost = option.line !== streak.line ? streak.weight : 1;
+      const visitedOnLine = visitedPerLine.get(option.line) ?? 0;
+      const fatigue = settings.preferFreshLines ? lineFatigue(visitedOnLine) : 1;
+      const direction =
+        momentum?.line === option.line ? (momentum.dir === option.dir ? KEEP_DIRECTION_WEIGHT : REVERSE_DIRECTION_WEIGHT) : 1;
+      const open = faces.filter((f) => !f.blocked);
+      // A train that can only return to hubs is as rare as the hub return itself.
+      const hubReturn = open.length && open.every((f) => hubReturns.has(f.path.at(-1)!)) ? HUB_RETURN_WEIGHT : 1;
+      const weight = boost * fatigue * direction * hubReturn;
+      return { option, faces, open, weight, boost, fatigue, visitedOnLine, direction, hubReturn };
+    });
+  let choices = buildChoices();
+  // Hub returns are a rare extra, not a way out: if nothing new is reachable, they don't count
+  // and the dead-end options (transfer roll, walking) take over.
+  const somethingNew = choices.some((c) => c.open.some((f) => !hubReturns.has(f.path.at(-1)!)));
+  if (!somethingNew && hubReturns.size) {
+    for (const s of hubReturns) explored.add(s);
+    hubReturns.clear();
+    choices = buildChoices();
+  }
   const open = choices.filter((c) => c.open.length > 0);
   // A single option needs no roll, same as a single stops face below.
   const rolled = open.length === 1 ? open[0]! : (open.find((c) => c.option.key === trip.rolledOption) ?? null);
@@ -258,7 +288,7 @@ function tripView(trip: Trip): TripView {
         explorer.hasOtherLine(dest, streak.line, settings.maxWalkMin)
           ? streak.weight
           : 1;
-      return change * (ridden.has(dest) ? RIDDEN_THROUGH_WEIGHT : 1);
+      return change * (ridden.has(dest) ? RIDDEN_THROUGH_WEIGHT : 1) * (hubReturns.has(dest) ? HUB_RETURN_WEIGHT : 1);
     }) ?? [];
   const face = !rolled
     ? null
@@ -284,6 +314,7 @@ function tripView(trip: Trip): TripView {
     streak,
     explored,
     hubRevisits,
+    hubReturns,
     tripExplored,
     transfers,
     transfer,
@@ -565,6 +596,7 @@ function weightBadges(choice: Choice): string {
     choice.direction > 1 ? t.keepDirectionTitle(choice.direction.toFixed(2)) : "",
     choice.direction < 1 ? t.reverseDirectionTitle(choice.direction.toFixed(2)) : "",
     choice.fatigue < 1 ? t.fatigueTitle(choice.visitedOnLine, choice.fatigue.toFixed(2)) : "",
+    choice.hubReturn < 1 ? t.hubReturnTitle : "",
   ].filter(Boolean);
   if (state.settings.exactWeights) {
     if (choice.weight === 1) return "";
@@ -575,7 +607,8 @@ function weightBadges(choice: Choice): string {
     (choice.boost > 1 ? ` <span class="boost">×${shownWeight(choice.boost)}</span>` : "") +
     (choice.direction > 1 ? ` <span class="dir-icon keep" title="${esc(titles[0]!)}">➜</span>` : "") +
     (choice.direction < 1 ? ` <span class="dir-icon reverse" title="${esc(titles[0]!)}">↩</span>` : "") +
-    (choice.fatigue < 1 ? ` <span class="fatigue-icon" title="${esc(titles.at(-1)!)}">↓</span>` : "")
+    (choice.fatigue < 1 ? ` <span class="fatigue-icon" title="${esc(t.fatigueTitle(choice.visitedOnLine, choice.fatigue.toFixed(2)))}">↓</span>` : "") +
+    (choice.hubReturn < 1 ? ` <span class="fatigue-icon" title="${esc(t.hubReturnTitle)}">↺</span>` : "")
   );
 }
 
@@ -754,9 +787,13 @@ function stuckHtml(trip: Trip, view: TripView, blockedItems: string): string {
 }
 
 /** The stops result: the count, big, and where it takes you. */
-function stopCard(face: Face, hubRevisits: Set<number>, extraClass = ""): string {
+function stopCard(face: Face, view: Pick<TripView, "hubRevisits" | "hubReturns">, extraClass = ""): string {
   const dest = face.path.at(-1)!;
-  const hub = hubRevisits.has(dest) ? ` <span class="tag" title="${esc(t.hubTitle)}">${t.hubTag}</span>` : "";
+  const hub = view.hubRevisits.has(dest)
+    ? ` <span class="tag" title="${esc(t.hubTitle)}">${t.hubTag}</span>`
+    : view.hubReturns.has(dest)
+      ? ` <span class="tag" title="${esc(t.hubReturnTitle)}">${t.hubReturnTag}</span>`
+      : "";
   return `<div class="option stop-card ${extraClass}">
     <span class="num">${face.stops}</span>
     <span class="body"><strong>${esc(stationName(dest))}</strong> <span class="ja">${esc(stationAltName(dest))}</span>${hub}<br>
@@ -772,17 +809,19 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
       const past = f.blocked === "visited" && !view.tripExplored.has(f.path.at(-1)!);
       const dest = f.path.at(-1);
       const ridden = !f.blocked && dest !== undefined && view.ridden.has(dest);
+      const hubReturn = !f.blocked && dest !== undefined && view.hubReturns.has(dest);
       const cls = [
         f.blocked ? `blocked ${f.blocked}` : "open",
         past ? "past" : "",
         ridden ? "ridden" : "",
+        hubReturn ? "hub-return" : "",
         face?.stops === f.stops ? "chosen" : "",
         weight > 1 ? "boosted" : "",
       ];
       const name = dest !== undefined ? stationName(dest) : "";
       const hub = !f.blocked && dest !== undefined && view.hubRevisits.has(dest) ? ` (${t.hubTag})` : "";
       const reason = past ? t.blockedPast : f.blocked ? t.blocked[f.blocked] : "";
-      const title = f.blocked ? `${name ? `${name}: ` : ""}${reason}` : name + hub + (ridden ? ` (${t.riddenTitle})` : "");
+      const title = f.blocked ? `${name ? `${name}: ` : ""}${reason}` : name + hub + (ridden ? ` (${t.riddenTitle})` : "") + (hubReturn ? ` (${t.hubReturnTitle})` : "");
       const shown = weight > 1 || (state.settings.exactWeights && weight !== 1);
       const boost = shown ? ` data-boost="×${shownWeight(weight)}"` : "";
       return `<div class="face ${cls.join(" ")}" title="${esc(title)}"${boost}>${f.stops}</div>`;
@@ -793,8 +832,9 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
   const hasShort = choice.faces.some((f) => f.blocked === "short");
   const hasPast = choice.faces.some((f) => f.blocked === "visited" && !view.tripExplored.has(f.path.at(-1)!));
   const hasRidden = !single && choice.open.some((f) => view.ridden.has(f.path.at(-1)!));
+  const hasHubReturn = !single && choice.open.some((f) => view.hubReturns.has(f.path.at(-1)!));
   const slot = face
-    ? stopCard(face, view.hubRevisits, "chosen")
+    ? stopCard(face, view, "chosen")
     : `<div class="option placeholder"><span class="num">?</span><span class="body">${t.stopsPrompt(choice.open.length)}</span></div>`;
   return `
     <section class="card" id="step-stops">
@@ -809,6 +849,7 @@ function stopsRollHtml(view: TripView, choice: Choice, face: Face | null): strin
         ${hasPast && !single ? `<span class="face mini blocked visited past">✕</span> ${t.legendPast}` : ""}
         ${boosted ? `<span class="face mini boosted-mini">×</span> ${t.legendBoost(shownWeight(view.streak.weight))}` : ""}
         ${hasRidden ? `<span class="face mini ridden">·</span> ${t.legendRidden}` : ""}
+        ${hasHubReturn ? `<span class="face mini hub-return">↺</span> ${t.legendHubReturn}` : ""}
       </p>
       ${single || (face && !state.settings.allowRerolls)
         ? ""
@@ -1129,12 +1170,13 @@ async function handleAction(action: string, target: HTMLElement): Promise<void> 
       break;
     }
     case "roll-stops": {
-      const { rolled, face, faceWeights, hubRevisits } = tripView(trip);
+      const view = tripView(trip);
+      const { rolled, face, faceWeights } = view;
       if (!rolled || (face && !state.settings.allowRerolls)) return;
       const pick = weightedRandom(faceWeights);
       const slot = app.querySelector<HTMLElement>("#stops-slot")!;
       const faces = [...app.querySelectorAll<HTMLElement>(".face.open")];
-      const cards = rolled.open.map((f) => stopCard(f, hubRevisits, "spinning"));
+      const cards = rolled.open.map((f) => stopCard(f, view, "spinning"));
       await spin(cards.length, pick, (i) => {
         slot.innerHTML = cards[i]!;
         faces.forEach((el, j) => el.classList.toggle("spinning", i === j));

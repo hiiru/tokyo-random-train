@@ -14,6 +14,8 @@ The **EN / 日本語** toggle in the header switches the whole app: UI text, sta
 
 Every station you land on is marked as explored for the rest of the trip, along with every station within the same walking distance. Faces that would land in an explored area, outside the play area, or past the end of the line are crossed out and re-rolled; lines with no open faces drop out of roll 1.
 
+**Hubs come back, rarely.** A hub (5+ lines within the walk limit) you got off at earlier on this trip opens up again once it isn't among your last 4 stations: its face on the stops die gets weight 0.1 (shown "↺ hub again"), and a train whose only open stops are such hubs gets 0.1 on the train die. This only applies while something new is reachable; if hubs would be the only way on, they stay blocked and the dead-end options below take over.
+
 **When every roll is explored** (e.g. you've used up all transfers of a single line):
 1. **🔀 Roll for a transfer:** the app lists stations on the lines here, at any distance (the stops die doesn't apply), where you can change to another line that still has unexplored stops. A die picks one. The transfer station may itself be explored; you're only changing there. One candidate is picked without a roll; re-roll rules apply as usual.
 2. **🧭 No transfer helps:** the 3 nearest unexplored stations with an open roll from there are suggested, each with a "🚶 Walk" button (and a direct ride button if one of the lines here goes there).
