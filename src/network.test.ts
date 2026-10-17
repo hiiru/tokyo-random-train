@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import network from "./data/network.json";
+import { TRANSFER_CORRECTIONS } from "./data/transfers.ts";
 import {
   Explorer,
   lineChangeWeight,
@@ -10,7 +11,7 @@ import {
   type RuleSettings,
 } from "./network.ts";
 
-const explorer = new Explorer(network as Network);
+const explorer = new Explorer(network as Network, TRANSFER_CORRECTIONS);
 const rules: RuleSettings = { maxWalkMin: 5, areaKm: 20, dieSides: 6, minStops: 1 };
 
 function station(name: string, lineId: string): number {
@@ -35,16 +36,32 @@ const lineIds = (from: number, maxWalkMin: number) =>
 
 describe("lines at a station", () => {
   test("include lines within a casual walk, not further", () => {
-    // Bakurocho (Tozai Line) is ~9 min away.
+    // Bakurocho (Tozai Line, underground) is ~9 min away from the street-level JR platform.
     const asakusabashi = station("Asakusabashi", "JR-East.ChuoSobuLocal");
     expect(lineIds(asakusabashi, 5)).toEqual(new Set(["JR-East.ChuoSobuLocal", "Toei.Oedo"]));
-    expect(lineIds(asakusabashi, 9).has("TokyoMetro.Tozai")).toBe(true);
+    expect(lineIds(asakusabashi, 10).has("TokyoMetro.Tozai")).toBe(true);
   });
 
   test("same-named stations count as one station even with no walking allowed", () => {
     const asakusabashi = station("Asakusabashi", "JR-East.ChuoSobuLocal");
     expect(lineIds(asakusabashi, 0)).toEqual(new Set(["JR-East.ChuoSobuLocal", "Toei.Oedo"]));
     expect(lineIds(station("Kanda", "JR-East.Yamanote"), 0).has("TokyoMetro.Ginza")).toBe(true);
+  });
+
+  test("hand-estimated transfers replace the straight-line estimate", () => {
+    // Both are at one coordinate in the data; the real walk is long.
+    const tokyo = station("Tokyo", "JR-East.Yamanote");
+    expect(explorer.walk(tokyo, station("Tokyo", "JR-East.Keiyo"))).toBe(12);
+    // Same-named platforms still count as part of the station, with the corrected time shown.
+    const keiyo = explorer.nearby(tokyo, 5).find((n) => n.station === station("Tokyo", "JR-East.Keiyo"));
+    expect(keiyo?.walkMin).toBe(12);
+  });
+
+  test("changing between street level and underground adds time", () => {
+    const jr = station("Asakusabashi", "JR-East.ChuoSobuLocal");
+    const oedo = station("Asakusabashi", "Toei.Oedo");
+    expect(explorer.walk(jr, oedo)).toBeCloseTo(3.4 + 0.5, 1);
+    expect(explorer.walk(jr, oedo)).toBeLessThanOrEqual(5);
   });
 
   test("a walkable station brings its same-named complex along", () => {

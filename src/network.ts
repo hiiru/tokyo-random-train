@@ -8,6 +8,8 @@ export interface Station {
   lng: number;
   /** Index into Network.lines. */
   line: number;
+  /** Platform below ground (Mini Tokyo 3D altitude -1). */
+  underground?: boolean;
 }
 
 export interface Line {
@@ -84,6 +86,8 @@ export const TOKYO_STATION: LatLng = { lat: 35.68124, lng: 139.76712 };
 // Casual pace; real walking routes run ~25% longer than the straight line.
 const WALK_M_PER_MIN = 75;
 const ROUTE_DETOUR = 1.25;
+// Stairs or escalators between a street-level and an underground platform.
+const LEVEL_CHANGE_MIN = 0.5;
 // Same-named stations this close form one station complex
 // (e.g. Meiji-jingumae on the Chiyoda and Fukutoshin lines).
 export const COMPLEX_RADIUS_M = 700;
@@ -98,6 +102,10 @@ export function distanceM(a: LatLng, b: LatLng): number {
 
 export function walkMinutes(a: LatLng, b: LatLng): number {
   return (distanceM(a, b) * ROUTE_DETOUR) / WALK_M_PER_MIN;
+}
+
+function pairKey(a: number, b: number): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 /** Comparable station name: "Keiō-hachiōji" → "keiohachioji", "Oshiage (SKYTREE)" → "oshiage". */
@@ -157,6 +165,13 @@ export function lineChangeWeight(streak: number): number {
   return Math.min(MAX_LINE_CHANGE_WEIGHT, Math.round((2 + (streak - STREAK_THRESHOLD) * step) * 10) / 10);
 }
 
+/** Platform pair → hand-estimated minutes; see src/data/transfers.ts. */
+export interface TransferCorrection {
+  from: string[];
+  to: string[];
+  minutes: number;
+}
+
 export class Explorer {
   readonly lines: Line[];
   readonly stations: Station[];
@@ -164,8 +179,10 @@ export class Explorer {
   readonly keys: string[];
   /** Positions of each station within its own line (usually one). */
   private readonly positions: number[][];
+  /** "a|b" (station indexes, a < b) → corrected walking minutes. */
+  private readonly corrections = new Map<string, number>();
 
-  constructor(network: Network) {
+  constructor(network: Network, corrections: TransferCorrection[] = []) {
     this.lines = network.lines;
     this.stations = network.stations;
     this.keys = network.stations.map((s) => nameKey(s.name));
@@ -173,10 +190,32 @@ export class Explorer {
     for (const line of network.lines) {
       line.stations.forEach((station, pos) => this.positions[station]!.push(pos));
     }
+    const index = new Map(network.stations.map((s, i) => [s.id, i]));
+    const resolve = (id: string) => {
+      const i = index.get(id);
+      if (i === undefined) throw new Error(`Transfer correction: unknown station ${id}`);
+      return i;
+    };
+    for (const { from, to, minutes } of corrections) {
+      for (const a of from.map(resolve)) for (const b of to.map(resolve)) this.corrections.set(pairKey(a, b), minutes);
+    }
   }
 
   inArea(station: number, areaKm: number | null): boolean {
     return areaKm === null || distanceM(TOKYO_STATION, this.stations[station]!) <= areaKm * 1000;
+  }
+
+  /**
+   * Casual walking minutes between two platforms: a hand-estimated correction if there is
+   * one, else the straight-line estimate plus a level change between ground and underground.
+   */
+  walk(a: number, b: number): number {
+    if (a === b) return 0;
+    const corrected = this.corrections.get(pairKey(a, b));
+    if (corrected !== undefined) return corrected;
+    const sa = this.stations[a]!;
+    const sb = this.stations[b]!;
+    return walkMinutes(sa, sb) + (Boolean(sa.underground) !== Boolean(sb.underground) ? LEVEL_CHANGE_MIN : 0);
   }
 
   /** Whether a line other than `line` can be boarded around `station`. */
@@ -186,26 +225,17 @@ export class Explorer {
 
   /**
    * Stations reachable on foot from `from`, including `from` itself. Stations within
-   * `maxWalkMin` count, plus same-named members of their station complex.
+   * `maxWalkMin` count, plus same-named members of their station complex (shown with
+   * their own walking time).
    */
   nearby(from: number, maxWalkMin: number): Nearby[] {
     const origin = this.stations[from]!;
-    const direct = new Map<number, number>();
-    const complexWalk = new Map<string, number>();
-    this.stations.forEach((s, i) => {
-      const walk = i === from ? 0 : walkMinutes(origin, s);
-      if (walk > maxWalkMin) return;
-      direct.set(i, walk);
-      const key = this.keys[i]!;
-      complexWalk.set(key, Math.min(complexWalk.get(key) ?? Infinity, walk));
-    });
-
+    const walks = this.stations.map((_, i) => this.walk(from, i));
+    const reachableNames = new Set(this.keys.filter((_, i) => walks[i]! <= maxWalkMin));
     const result: Nearby[] = [];
     this.stations.forEach((s, i) => {
-      const walk = direct.get(i) ?? complexWalk.get(this.keys[i]!);
-      if (walk === undefined) return;
-      if (!direct.has(i) && distanceM(origin, s) > COMPLEX_RADIUS_M) return;
-      result.push({ station: i, walkMin: walk });
+      const sameStation = reachableNames.has(this.keys[i]!) && distanceM(origin, s) <= COMPLEX_RADIUS_M;
+      if (walks[i]! <= maxWalkMin || sameStation) result.push({ station: i, walkMin: walks[i]! });
     });
     return result.sort((a, b) => a.walkMin - b.walkMin);
   }

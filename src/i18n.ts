@@ -47,6 +47,7 @@ const en = {
   wikiError: "Couldn't reach Wikipedia.",
   map: "🗺️ Map",
   youAreHere: (name: string) => `You are here: ${name}`,
+  visitedAtStops: (labels: string) => `Stops: ${labels}`,
 
   whichTrain: "Which train?",
   rollSummary: (n: number, walk: number) =>
@@ -179,6 +180,7 @@ const ja: Messages = {
   wikiError: "Wikipediaに接続できませんでした。",
   map: "🗺️ 地図",
   youAreHere: (name: string) => `現在地: ${name}`,
+  visitedAtStops: (labels: string) => `訪問順: ${labels}`,
 
   whichTrain: "どの電車？",
   rollSummary: (n: number, walk: number) => `d${n}・徒歩${walk}分以内の${n}通り`,

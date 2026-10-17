@@ -63,7 +63,7 @@ const OPERATOR_NAMES: Record<string, { en: string; ja: string }> = {
 
 type Titles = { en?: string; ja?: string };
 interface RawRailway { id: string; title: Titles; stations: string[]; ascending?: string; descending?: string; color?: string }
-interface RawStation { id: string; railway: string; coord?: [number, number]; title: Titles; alternate?: string }
+interface RawStation { id: string; railway: string; coord?: [number, number]; title: Titles; alternate?: string; altitude?: number }
 interface RawDirection { id: string; title: Titles }
 
 async function get<T>(name: string): Promise<T> {
@@ -112,6 +112,7 @@ for (const railway of railways) {
       nameJa: s.title.ja ?? "",
       lat: round(s.coord![1]),
       lng: round(s.coord![0]),
+      ...(s.altitude === -1 ? { underground: true } : {}),
       line: lineIndex,
     });
     stationIndexById.set(id, stations.length - 1);

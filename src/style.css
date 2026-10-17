@@ -273,7 +273,7 @@ button.icon { padding: 6px 10px; }
 .notice { background: var(--chosen); border-radius: 10px; padding: 10px 12px; }
 .notice button { margin-top: 8px; }
 
-.journey { padding-left: 1.4em; line-height: 1.9; margin: 0; }
+.journey { list-style: none; padding-left: 0; line-height: 1.9; margin: 0; }
 
 .map-card summary { padding: 16px 16px 0; }
 .map-card:not([open]) summary { padding-bottom: 16px; }
@@ -359,3 +359,28 @@ dialog menu button { flex: 1; margin: 0; }
 #spots { min-height: calc(5 * 60px + 5 * 8px + 44px); align-content: start; }
 #suggestion .suggestion { min-height: 166px; align-content: start; }
 .suggestion-head { min-height: 36px; }
+
+/* Numbered stops, on the map and in the journey log. The outer box is Leaflet's (positioned via
+   transform), so all visuals live on the inner span. Zoomed out: small dots; .show-numbers: numbers. */
+.stop-marker { display: grid; place-items: center; }
+.stop-marker > span {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #222;
+  border-radius: 50%;
+  background: #fff;
+  color: #222;
+  font: 700 0/1 system-ui, sans-serif;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: width 0.15s, height 0.15s;
+}
+.stop-marker.current > span { width: 16px; height: 16px; background: #e60033; border-color: #fff; color: #fff; }
+/* Visited more than once: double ring. */
+.stop-marker.multi > span { outline: 2px solid #222; outline-offset: 1px; }
+.show-numbers .stop-marker > span, .stop-marker.inline > span { width: 22px; height: 22px; font-size: 11px; }
+.show-numbers .stop-marker.current > span { width: 28px; height: 28px; font-size: 13px; }
+.stop-marker.inline { display: inline-grid; vertical-align: middle; margin-right: 4px; }
+.stop-marker.inline > span { box-shadow: none; }

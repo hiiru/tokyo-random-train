@@ -42,7 +42,11 @@ bun run typecheck
 
 ## How "a short walk" is estimated
 
-Each line's platform has its own coordinate. Walking time is straight-line distance × 1.25 (route detour) at 75 m/min (casual pace). Same-named stations within 700 m count as one station complex. For example, if Meiji-jingūmae's Chiyoda platform is within reach of Harajuku, its Fukutoshin platform is included too. Giant stations (Shinjuku, Tokyo) can take longer than the estimate, so follow the signs.
+Each line's platform has its own coordinate. Walking time is straight-line distance × 1.25 (route detour) at 75 m/min (casual pace), plus 0.5 min when changing between a street-level and an underground platform.
+
+Some big stations are badly off with that formula (deep platforms, long passages, or several platforms sharing one coordinate in the data). `src/data/transfers.ts` lists hand-estimated times for those platform pairs, which replace the formula: currently Tokyo (e.g. JR → Keiyō 12 min) and Shinjuku (e.g. JR → Ōedo 8 min). They're rough estimates. Edit the file to correct or extend it; an unknown station id fails the tests.
+
+Same-named stations within 700 m always count as one station complex, whatever the walking time. The time shown is each platform's own estimate. For example, if Meiji-jingūmae's Chiyoda platform is within reach of Harajuku (5 min), its Fukutoshin platform is included too, shown as ~7 min.
 
 ## Data
 

@@ -1,6 +1,7 @@
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import networkData from "./data/network.json";
+import { TRANSFER_CORRECTIONS } from "./data/transfers.ts";
 import {
   Explorer,
   randomInt,
@@ -27,7 +28,7 @@ import {
 import { nearbySpots, MAP_SEARCHES, mapSearchUrl, walkingDirectionsUrl, type Spot } from "./explore.ts";
 import { MESSAGES, type Lang, type Messages } from "./i18n.ts";
 
-const explorer = new Explorer(networkData as Network);
+const explorer = new Explorer(networkData as Network, TRANSFER_CORRECTIONS);
 const { stations, lines } = explorer;
 const stationIndex = new Map(stations.map((s, i) => [s.id, i]));
 const lineIndex = new Map(lines.map((l, i) => [l.id, i]));
@@ -516,19 +517,26 @@ function goHtml(choice: Choice, face: Face): string {
     </section>`;
 }
 
+/** Marker label for the n-th visited station: "S" for the start, then the stop number. */
+function stopLabel(n: number): string {
+  return n === 0 ? "S" : String(n);
+}
+
 function journeyHtml(trip: Trip): string {
   const timeFormat = new Intl.DateTimeFormat(lang === "ja" ? "ja-JP" : "en-US", { hour: "2-digit", minute: "2-digit" });
   const steps = trip.steps
-    .map((step) => {
+    .map((step, i) => {
       const dest = stationIndex.get(step.path.at(-1)!)!;
-      return `<li>${lineBadge(lineIndex.get(step.line)!)} ${t.stops(step.stops)} → <strong>${esc(stationName(dest))}</strong>
+      return `<li><span class="stop-marker inline"><span>${stopLabel(i + 1)}</span></span>
+        ${lineBadge(lineIndex.get(step.line)!)} ${t.stops(step.stops)} → <strong>${esc(stationName(dest))}</strong>
         <small class="muted">${timeFormat.format(new Date(step.at))}</small></li>`;
     })
     .join("");
   return `
     <section class="card">
       <h3>${t.journey}</h3>
-      <ol class="journey"><li>${t.journeyStart} <strong>${esc(stationName(stationIndex.get(trip.start)!))}</strong></li>${steps}</ol>
+      <ol class="journey"><li><span class="stop-marker inline"><span>${stopLabel(0)}</span></span>
+        ${t.journeyStart} <strong>${esc(stationName(stationIndex.get(trip.start)!))}</strong></li>${steps}</ol>
       <div class="row">
         ${trip.steps.length ? `<button data-action="undo">${t.undo}</button>` : ""}
         <button data-action="end-trip">${t.endTrip}</button>
@@ -604,6 +612,8 @@ let mapLayer: L.LayerGroup | null = null;
 /** Framing for the current route; applied once per route change, and only while the map is visible. */
 let framing: { key: string; bounds: L.LatLngBounds | null; center: L.LatLngTuple } | null = null;
 let framedKey = "";
+/** Zoom level from which stop markers show their numbers. */
+const NUMBER_ZOOM = 14;
 
 function frameMap(): void {
   if (!map || !framing || !mapSection.open || framing.key === framedKey) return;
@@ -622,6 +632,10 @@ function updateMap(trip: Trip, view: TripView): void {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }).addTo(map);
     mapLayer = L.layerGroup().addTo(map);
+    // Numbers only from street level; zoomed out they'd clutter the route.
+    const syncZoom = () => map!.getContainer().classList.toggle("show-numbers", map!.getZoom() >= NUMBER_ZOOM);
+    map.on("zoomend", syncZoom);
+    syncZoom();
   }
   map.invalidateSize();
   mapLayer!.clearLayers();
@@ -643,15 +657,30 @@ function updateMap(trip: Trip, view: TripView): void {
     L.polyline(coords, { color: lines[view.rolled.option.line]!.color, weight: 5, dashArray: "8 8", opacity: 0.8 }).addTo(mapLayer!);
     points.push(...coords);
   }
-  for (const v of view.visited) {
-    L.circleMarker(latlng(v), { radius: 6, color: "#222", weight: 2, fillColor: "#fff", fillOpacity: 1 })
-      .bindTooltip(stationName(v))
+  // Numbered in travel order: S for the start, then the stop number (same as "Stop N" and the journey log).
+  // Repeat visits to one station (any of its platforms) share a marker that lists every visit.
+  const places: { station: number; labels: string[]; current: boolean }[] = [];
+  view.visited.forEach((v, i) => {
+    let place = places.find(
+      (p) => explorer.keys[p.station] === explorer.keys[v] && distanceM(stations[p.station]!, stations[v]!) <= COMPLEX_RADIUS_M,
+    );
+    if (!place) places.push((place = { station: v, labels: [], current: false }));
+    place.labels.push(stopLabel(i));
+    place.current ||= i === view.visited.length - 1;
+  });
+  places.forEach((p, i) => {
+    const multi = p.labels.length > 1;
+    const icon = L.divIcon({
+      className: `stop-marker${p.current ? " current" : ""}${multi ? " multi" : ""}`,
+      html: `<span>${p.labels.at(-1)}</span>`,
+      iconSize: [28, 28],
+    });
+    const name = esc(p.current ? t.youAreHere(stationName(p.station)) : stationName(p.station));
+    L.marker(latlng(p.station), { icon, zIndexOffset: p.current ? 1000 : i })
+      .bindTooltip(multi ? `${name}<br>${t.visitedAtStops(p.labels.join(", "))}` : name)
       .addTo(mapLayer!);
-    points.push(latlng(v));
-  }
-  L.circleMarker(latlng(view.current), { radius: 10, color: "#fff", weight: 3, fillColor: "#e60033", fillOpacity: 1 })
-    .bindTooltip(t.youAreHere(stationName(view.current)))
-    .addTo(mapLayer!);
+    points.push(latlng(p.station));
+  });
 
   // Re-frame only when the route changes, so manual panning sticks between renders.
   framing = {
